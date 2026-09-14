@@ -2,8 +2,10 @@
  * Prepares transcript boundaries, session management, and active resources.
  * It may assume attempt configuration and tool inputs are ready.
  */
+import { readChannelSourceTurnSameThreadRequired } from "../../../auto-reply/reply/source-turn-id.js";
 import type { SessionTranscriptRuntimeTarget } from "../../../config/sessions/session-accessor.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
+import { resolveMessageActionTurnCapability } from "../../../gateway/message-action-turn-capability.js";
 import {
   attachRuntimePromptMediaFacts,
   readPersistedMediaFacts,
@@ -311,6 +313,14 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
   const markSourceReplyDelivered = () => {
     didDeliverSourceReplyViaMessageTool = true;
   };
+  const messageActionTurnContext = resolveMessageActionTurnCapability({
+    token: attempt.messageActionTurnCapability,
+    agentId: input.sessionAgentId,
+    runId: attempt.runId,
+    sessionKey:
+      input.clientToolPreparation.sandboxSessionKey ?? attempt.sessionKey ?? attempt.sessionId,
+    sessionId: attempt.sessionId,
+  });
   installMessageToolOnlyTerminalHook({
     agent: activeSession.agent,
     sourceReplyDeliveryMode: attempt.sourceReplyDeliveryMode,
@@ -321,6 +331,9 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
     currentChannelId: attempt.currentChannelId,
     currentMessagingTarget: attempt.currentMessagingTarget,
     currentThreadId: attempt.currentThreadTs,
+    sameChannelThreadRequired:
+      messageActionTurnContext?.toolContext?.sameChannelThreadRequired ??
+      readChannelSourceTurnSameThreadRequired(attempt),
     currentMessageId: attempt.currentMessageId,
     replyToMode: attempt.replyToMode,
     hasRepliedRef: attempt.hasRepliedRef,
