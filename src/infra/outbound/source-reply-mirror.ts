@@ -135,13 +135,15 @@ function resolveSourceReplyThreadPlacement(
   // conversation, not an auto-reply anchor carried in `currentThreadTs`.
   // Bound sessions omit the thread suffix, so retain the provider's explicit
   // thread requirement as the authoritative fallback for those sessions.
+  // Older callers without an admitted fact retain their transport thread;
+  // only an explicit false identifies a standalone reply anchor.
   const sessionThreadId = normalizeOptionalString(
     parseSessionThreadInfoFast(params.sessionKey).threadId,
   );
   const sourceConversationThreadId =
     params.actionParams.topLevel === true
       ? (sessionThreadId ??
-        (params.toolContext?.sameChannelThreadRequired === true ? currentThreadId : undefined))
+        (params.toolContext?.sameChannelThreadRequired === false ? undefined : currentThreadId))
       : currentThreadId;
   const deliveredPlacement = resolveDeliveredThreadPlacement(params, sourceConversationThreadId);
   if (deliveredPlacement) {

@@ -98,6 +98,12 @@ describe("isDeliveredCurrentSourceReply", () => {
       sameChannelThreadRequired: true,
       expected: false,
     },
+    {
+      name: "unknown admitted thread requirement",
+      sessionKey: "agent:main:slack:channel:c0example0",
+      sameChannelThreadRequired: undefined,
+      expected: false,
+    },
   ])(
     "classifies an explicit top-level Slack send from a $name",
     ({ sessionKey, sameChannelThreadRequired, expected }) => {

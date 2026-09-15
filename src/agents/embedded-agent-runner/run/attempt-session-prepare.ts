@@ -321,6 +321,9 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
       input.clientToolPreparation.sandboxSessionKey ?? attempt.sessionKey ?? attempt.sessionId,
     sessionId: attempt.sessionId,
   });
+  const sameChannelThreadRequired =
+    messageActionTurnContext?.toolContext?.sameChannelThreadRequired ??
+    readChannelSourceTurnSameThreadRequired(attempt);
   installMessageToolOnlyTerminalHook({
     agent: activeSession.agent,
     sourceReplyDeliveryMode: attempt.sourceReplyDeliveryMode,
@@ -331,9 +334,7 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
     currentChannelId: attempt.currentChannelId,
     currentMessagingTarget: attempt.currentMessagingTarget,
     currentThreadId: attempt.currentThreadTs,
-    sameChannelThreadRequired:
-      messageActionTurnContext?.toolContext?.sameChannelThreadRequired ??
-      readChannelSourceTurnSameThreadRequired(attempt),
+    sameChannelThreadRequired,
     currentMessageId: attempt.currentMessageId,
     replyToMode: attempt.replyToMode,
     hasRepliedRef: attempt.hasRepliedRef,
@@ -348,6 +349,7 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
     hasDeliveredSourceReply: () => didDeliverSourceReplyViaMessageTool,
     hookRunner,
     markSourceReplyDelivered,
+    sameChannelThreadRequired,
     setActiveSessionSystemPrompt,
     settingsManager,
     refreshTools: () => {
