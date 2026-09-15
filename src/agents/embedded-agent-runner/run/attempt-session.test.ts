@@ -242,7 +242,8 @@ describe("prepareEmbeddedAttemptAgentSession", () => {
       };
       setChannelSourceTurnSameThreadRequired(fixture.input.attempt, recovery);
       fixture.input.clientToolPreparation = {
-        ...fixture.input.clientToolPreparation,
+        codeModeControlsEnabledForRun: true,
+        deferredDirectoryToolsCallable: false,
         sandboxSessionKey: policySessionKey,
       } as never;
       try {
