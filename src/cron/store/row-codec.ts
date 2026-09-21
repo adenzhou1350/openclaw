@@ -393,6 +393,13 @@ export function replaceCronRows(
     executeSqliteQuerySync(
       db,
       getCronStoreKysely(db)
+        .deleteFrom("cron_job_scratch")
+        .where("store_key", "=", storeKey)
+        .where("job_id", "=", row.job_id),
+    );
+    executeSqliteQuerySync(
+      db,
+      getCronStoreKysely(db)
         .deleteFrom("cron_jobs")
         .where("store_key", "=", storeKey)
         .where("job_id", "=", row.job_id),

@@ -230,6 +230,14 @@ describe("cron job scratch store", () => {
 
   it("rejects a late write after the owning job is durably deleted", async () => {
     const fixture = await createFixture();
+    expect(
+      writeCronJobScratch({
+        ...fixture,
+        jobId: "job-1",
+        content: "scratch to remove",
+        nowMs: 5,
+      }),
+    ).toMatchObject({ ok: true, currentRevision: 1 });
     runOpenClawStateWriteTransaction(
       ({ db }) => replaceCronRows(db, cronStoreKey(fixture.storePath), { version: 1, jobs: [] }),
       fixture.options,
