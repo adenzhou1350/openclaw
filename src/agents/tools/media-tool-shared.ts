@@ -15,7 +15,6 @@ import type { AgentModelConfig } from "../../config/types.agents-shared.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { safeFileURLToPath } from "../../infra/local-file-access.js";
 import type { SsrFPolicy } from "../../infra/net/ssrf.js";
-import type { Model } from "../../llm/types.js";
 import { resolveChannelInboundAttachmentRootsForChannel } from "../../media/channel-inbound-roots.js";
 import { getDefaultLocalRootsCore } from "../../media/local-media-access.js";
 import {
@@ -23,8 +22,10 @@ import {
   normalizeMediaReferenceSource,
 } from "../../media/media-reference.js";
 import type { WebMediaResult } from "../../media/web-media.js";
-import { loadCapabilityManifestSnapshot } from "../../plugins/capability-provider-runtime.js";
-import { listAvailableManifestContractValues } from "../../plugins/manifest-contract-eligibility.js";
+import {
+  listAvailableManifestContractValues,
+  loadManifestContractSnapshot,
+} from "../../plugins/manifest-contract-eligibility.js";
 import { resolveUserPath } from "../../utils.js";
 import { buildTimeoutAbortSignal } from "../../utils/fetch-timeout.js";
 import type { AuthProfileStore } from "../auth-profiles/types.js";
@@ -46,6 +47,7 @@ import {
   hasSnapshotCapabilityAvailability,
 } from "./manifest-capability-availability.js";
 import {
+  applyAgentDefaultModelConfig,
   buildToolModelConfigFromCandidates,
   coerceToolModelConfig,
   hasProviderAuthForTool,
@@ -53,11 +55,7 @@ import {
   resolveDefaultModelRef,
   type ToolModelConfig,
 } from "./model-config.helpers.js";
-import {
-  getApiKeyForModelCore,
-  normalizeWorkspaceDir,
-  requireApiKey,
-} from "./tool-runtime.helpers.js";
+import { normalizeWorkspaceDir } from "./tool-runtime.helpers.js";
 
 type TextToolAttempt = {
   provider: string;
@@ -112,28 +110,6 @@ export function resolveRemoteMediaSsrfPolicy(
   cfg: OpenClawConfig | undefined,
 ): SsrFPolicy | undefined {
   return cfg?.tools?.web?.fetch?.ssrfPolicy;
-}
-
-export function applyAgentDefaultModelConfig(
-  cfg: OpenClawConfig | undefined,
-  key: "imageModel" | "image" | "video" | "music",
-  modelConfig: ToolModelConfig,
-): OpenClawConfig | undefined {
-  if (!cfg) {
-    return undefined;
-  }
-  return {
-    ...cfg,
-    agents: {
-      ...cfg.agents,
-      defaults: {
-        ...cfg.agents?.defaults,
-        ...(key === "imageModel"
-          ? { imageModel: modelConfig }
-          : { mediaModels: { ...cfg.agents?.defaults?.mediaModels, [key]: modelConfig } }),
-      },
-    },
-  };
 }
 
 type CapabilityProvider = {
@@ -403,9 +379,9 @@ export function hasGenerationToolAvailability(params: {
       config: params.cfg,
       workspaceDir: params.workspaceDir,
     }) ??
-    loadCapabilityManifestSnapshot({
-      cfg: params.cfg,
-      workspaceDir: params.workspaceDir,
+    loadManifestContractSnapshot({
+      config: params.cfg,
+      ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
     });
   if (
     hasSnapshotCapabilityAvailability({
@@ -453,7 +429,7 @@ export function resolveGenerateAction(
 }
 
 /**
- * Normalizes singular/plural media reference parameters into a deduped, bounded list.
+ * Normalizes singular/plural media references, preserving positions when requested.
  */
 export function normalizeMediaReferenceInputs(params: {
   args: Record<string, unknown>;
@@ -461,6 +437,7 @@ export function normalizeMediaReferenceInputs(params: {
   pluralKey: string;
   maxCount: number;
   label: string;
+  dedupe?: boolean;
 }): string[] {
   const single = readToolStringParam(params.args, params.singularKey);
   const multiple = readStringArrayParam(params.args, params.pluralKey);
@@ -470,7 +447,7 @@ export function normalizeMediaReferenceInputs(params: {
   for (const candidate of combined) {
     const trimmed = candidate.trim();
     const dedupe = trimmed.startsWith("@") ? trimmed.slice(1).trim() : trimmed;
-    if (!dedupe || seen.has(dedupe)) {
+    if (!dedupe || (params.dedupe !== false && seen.has(dedupe))) {
       continue;
     }
     seen.add(dedupe);
@@ -573,18 +550,25 @@ export async function resolveMediaToolReferenceAccess(params: {
       : { resolved: resolveHostPath() };
   return {
     resolvedPath: params.isDataUrl ? null : pathInfo.resolved,
-    localRoots: workspaceOnly
-      ? workspaceRoots
-      : uniqueStrings([...getDefaultLocalRootsCore(), ...workspaceRoots]),
+    localRoots: uniqueStrings([
+      ...(workspaceOnly ? workspaceRoots : [...getDefaultLocalRootsCore(), ...workspaceRoots]),
+      ...(params.fsPolicy?.readOnlyRoots ?? []),
+    ]),
     ...(pathInfo.rewrittenFrom ? { rewrittenFrom: pathInfo.rewrittenFrom } : {}),
   };
 }
 
 type LoadedToolReferenceMedia = WebMediaResult | ReturnType<typeof decodeDataUrl>;
 
+export type LoadedMediaToolReference<T> = {
+  source: T;
+  resolvedInput: string;
+  rewrittenFrom?: string;
+};
+
 export type MediaToolSandbox = Pick<
   SandboxedBridgeMediaPathConfig,
-  "root" | "bridge" | "stagedMediaPaths"
+  "root" | "bridge" | "stagedMediaPaths" | "readOnlyResourceMounts"
 >;
 
 export function resolveMediaToolSandboxConfig(
@@ -613,8 +597,8 @@ export async function loadMediaToolReferences<T>(params: {
   signal?: AbortSignal;
   mapMedia: (media: LoadedToolReferenceMedia) => T;
   mapRemote?: (url: string) => T;
-}): Promise<Array<{ source: T; resolvedInput: string; rewrittenFrom?: string }>> {
-  const loaded: Array<{ source: T; resolvedInput: string; rewrittenFrom?: string }> = [];
+}): Promise<LoadedMediaToolReference<T>[]> {
+  const loaded: LoadedMediaToolReference<T>[] = [];
   for (const rawInput of params.inputs) {
     params.signal?.throwIfAborted();
     const input = normalizeMediaReferenceSource(rawInput.trim().replace(/^@\s*/, ""));
@@ -754,35 +738,4 @@ export function buildTextToolResult(
       attempts: result.attempts,
     },
   };
-}
-
-/**
- * Loads the runtime API key for a resolved model and caches it in per-run auth storage.
- */
-export async function resolveModelRuntimeApiKey(params: {
-  model: Model;
-  cfg: OpenClawConfig | undefined;
-  agentDir: string;
-  authStorage: {
-    setRuntimeApiKey: (provider: string, apiKey: string) => void;
-  };
-}): Promise<string> {
-  const apiKeyInfo = await getApiKeyForModelCore({
-    model: params.model,
-    cfg: params.cfg,
-    agentDir: params.agentDir,
-    secretSentinels: true,
-  });
-  // Bedrock's runtime client owns AWS credential-chain resolution. Keep the
-  // empty sentinel out of auth storage and pass it through to the stream.
-  if (
-    !apiKeyInfo.apiKey?.trim() &&
-    apiKeyInfo.mode === "aws-sdk" &&
-    params.model.api === "bedrock-converse-stream"
-  ) {
-    return "";
-  }
-  const apiKey = requireApiKey(apiKeyInfo, params.model.provider);
-  params.authStorage.setRuntimeApiKey(params.model.provider, apiKey);
-  return apiKey;
 }
