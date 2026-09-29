@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../test/helpers/promise.js";
+import { createDeferred, withTestTimeout } from "../../test/helpers/promise.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getRemoteModelCatalogProviderOverlay } from "../model-catalog/remote-overlay.js";
@@ -861,20 +861,17 @@ describe("update-startup", () => {
     vi.useRealTimers();
     mockPackageInstallStatus();
     const selectorSeen = createDeferred<void>();
-    const selectorClosed = createDeferred<void>();
+    const selectorClosed = createDeferred<boolean>();
     const requests: string[] = [];
     const server = createServer((request, response) => {
       requests.push(request.url ?? "");
       if (request.url === "/openclaw/extended-stable") {
-        response.on("close", () => selectorClosed.resolve());
+        response.on("close", () => selectorClosed.resolve(response.writableEnded));
+        response.setHeader("content-type", "application/json");
+        // Keep the selector body unfinished. Normal response completion must
+        // never be mistaken for cancellation of the active registry fetch.
+        response.write('{"version":"');
         selectorSeen.resolve();
-        // A response after cancellation also lets the unfixed caller fail without hanging.
-        setTimeout(() => {
-          if (!response.destroyed) {
-            response.setHeader("content-type", "application/json");
-            response.end(JSON.stringify({ version: "2026.6.33" }));
-          }
-        }, 200);
         return;
       }
       response.setHeader("content-type", "application/json");
@@ -884,23 +881,28 @@ describe("update-startup", () => {
       offsets: [0],
       createListener: () => server,
     });
+    const controller = new AbortController();
     try {
       vi.stubEnv("OPENCLAW_UPDATE_PACKAGE_SPEC", "openclaw");
       vi.stubEnv("NPM_CONFIG_REGISTRY", `http://127.0.0.1:${reservation.claim.port}/`);
       const real = await vi.importActual<typeof import("./update-check.js")>("./update-check.js");
       vi.mocked(resolveNpmChannelTag).mockImplementation(real.resolveNpmChannelTag);
-      const controller = new AbortController();
       const checking = runGatewayUpdateCheck({
         cfg: createExtendedStableConfig(),
         signal: controller.signal,
       });
-      await selectorSeen.promise;
+      await withTestTimeout(selectorSeen.promise, 5_000, "selector request did not start");
       controller.abort();
-      await expect(checking).rejects.toMatchObject({ name: "AbortError" });
-      await selectorClosed.promise;
+      await expect(
+        withTestTimeout(checking, 5_000, "Gateway update check did not abort"),
+      ).rejects.toMatchObject({ name: "AbortError" });
+      expect(
+        await withTestTimeout(selectorClosed.promise, 5_000, "selector response did not close"),
+      ).toBe(false);
       expect(requests).toEqual(["/openclaw/extended-stable"]);
       expect(getUpdateAvailable()).toBeNull();
     } finally {
+      controller.abort();
       vi.unstubAllEnvs();
       server.closeAllConnections();
       await reservation.releaseListener();
