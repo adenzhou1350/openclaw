@@ -1,5 +1,6 @@
 // Covers startup update check and auto-update behavior.
 import fs from "node:fs/promises";
+import { createServer } from "node:http";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
@@ -18,6 +19,7 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
+import { reserveTestPortListener } from "../test-utils/port-claims.js";
 import type { GatewayActiveWorkInspectors } from "./gateway-active-work.js";
 import { writeUpdateInstallReceiptRowSync } from "./restart-sentinel-store.js";
 import { readRestartSentinel, writeRestartSentinel } from "./restart-sentinel.js";
@@ -846,12 +848,64 @@ describe("update-startup", () => {
     expectLastTelemetryConfig({});
     expect(resolveNpmChannelTag).toHaveBeenCalledWith({
       channel: "extended-stable",
+      signal: expect.any(AbortSignal),
     });
     expect(onUpdateAvailableChange).toHaveBeenCalledWith({
       currentVersion: "2026.6.33",
       latestVersion: "2026.7.33",
       channel: "extended-stable",
     });
+  });
+
+  it("closes a real Gateway registry request before the exact-package lookup", async () => {
+    vi.useRealTimers();
+    mockPackageInstallStatus();
+    const selectorSeen = createDeferred<void>();
+    const selectorClosed = createDeferred<void>();
+    const requests: string[] = [];
+    const server = createServer((request, response) => {
+      requests.push(request.url ?? "");
+      if (request.url === "/openclaw/extended-stable") {
+        response.on("close", () => selectorClosed.resolve());
+        selectorSeen.resolve();
+        // A response after cancellation also lets the unfixed caller fail without hanging.
+        setTimeout(() => {
+          if (!response.destroyed) {
+            response.setHeader("content-type", "application/json");
+            response.end(JSON.stringify({ version: "2026.6.33" }));
+          }
+        }, 200);
+        return;
+      }
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ version: "2026.6.33" }));
+    });
+    const reservation = await reserveTestPortListener({
+      offsets: [0],
+      createListener: () => server,
+    });
+    try {
+      vi.stubEnv("OPENCLAW_UPDATE_PACKAGE_SPEC", "openclaw");
+      vi.stubEnv("NPM_CONFIG_REGISTRY", `http://127.0.0.1:${reservation.claim.port}/`);
+      const real = await vi.importActual<typeof import("./update-check.js")>("./update-check.js");
+      vi.mocked(resolveNpmChannelTag).mockImplementation(real.resolveNpmChannelTag);
+      const controller = new AbortController();
+      const checking = runGatewayUpdateCheck({
+        cfg: createExtendedStableConfig(),
+        signal: controller.signal,
+      });
+      await selectorSeen.promise;
+      controller.abort();
+      await expect(checking).rejects.toMatchObject({ name: "AbortError" });
+      await selectorClosed.promise;
+      expect(requests).toEqual(["/openclaw/extended-stable"]);
+      expect(getUpdateAvailable()).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+      server.closeAllConnections();
+      await reservation.releaseListener();
+      await reservation.claim.release();
+    }
   });
 
   it("discovers and deduplicates an exact extended-stable update without auto-applying", async () => {
@@ -1042,6 +1096,7 @@ describe("update-startup", () => {
     expectLastTelemetryConfig({});
     expect(resolveNpmChannelTag).toHaveBeenCalledWith({
       channel: "extended-stable",
+      signal: expect.any(AbortSignal),
     });
   });
 
