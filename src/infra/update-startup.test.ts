@@ -620,7 +620,7 @@ describe("update-startup", () => {
   it("closes a real Gateway registry request before the exact-package lookup", async () => {
     vi.useRealTimers();
     mockPackageInstallStatus();
-    const selectorSeen = createDeferred<void>();
+    const selectorSeen = createDeferred();
     const selectorClosed = createDeferred<boolean>();
     const requests: string[] = [];
     const server = createServer((request, response) => {
