@@ -15,7 +15,10 @@ import {
   invalidateChatMetadataForSessionEvent,
   invalidateChatMetadataStore,
 } from "../lib/chat/chat-metadata-cache.ts";
-import { invalidateModelAuthStatusRequests } from "../lib/model-auth-request-state.ts";
+import {
+  invalidateModelAuthStatusRequests,
+  modelAuthEventInvalidates,
+} from "../lib/model-auth-request-state.ts";
 import { modelCatalogEventInvalidation } from "../lib/model-catalog-cache.ts";
 import { areUiSessionKeysEquivalent } from "../lib/sessions/session-key.ts";
 import type { ShellRouteState } from "./app-host-route-state.ts";
@@ -173,11 +176,11 @@ export class ShellGatewayOwner {
       });
     }
     const modelInvalidation = modelCatalogEventInvalidation(event);
-    if (modelInvalidation) {
-      if (client) {
-        invalidateModelAuthStatusRequests(client);
-        invalidateChatMetadataStore(client, undefined, undefined, modelInvalidation === "clear");
-      }
+    if (client && modelAuthEventInvalidates(event)) {
+      invalidateModelAuthStatusRequests(client);
+    }
+    if (client && (modelInvalidation || event.event === "chat.metadata.changed")) {
+      invalidateChatMetadataStore(client, undefined, undefined, modelInvalidation ?? "preserve");
     }
     if (event.event === "sessions.changed") {
       const context = this.host.context;
@@ -187,10 +190,13 @@ export class ShellGatewayOwner {
       return;
     }
     if (event.event === "config.changed") {
+      // Bootstrap owns upload policy independently of an open configuration editor.
+      void this.host.context?.config.refresh();
       // A local settings draft owns config conflicts; external snapshots must not overwrite it.
       const runtimeConfig = this.host.context?.runtimeConfig;
       if (runtimeConfig && !runtimeConfig.state.configFormDirty) {
-        void runtimeConfig.refresh();
+        // Save notifications reconcile in place so active editors keep focus and stay interactive.
+        void runtimeConfig.refresh({ background: true });
       }
       this.scheduleAgentRosterRefresh();
       return;
@@ -269,7 +275,7 @@ export class ShellGatewayOwner {
       new CustomEvent(UI_COMMAND_EVENT, { detail: commandParams, cancelable: true }),
     );
     if (!handled && (command.kind === "navigate" || command.kind === "split")) {
-      this.host.selectChatSession(command.sessionKey);
+      this.host.selectChatSession(command.sessionKey, commandParams.agentId);
     }
   }
 
@@ -328,10 +334,7 @@ export class ShellGatewayOwner {
         await this.ensureRuntimeConfig(snapshot, context.runtimeConfig);
         return this.refreshProfileAppearancePrefs(context);
       });
-      if (
-        this.host.routeState.routeId &&
-        (!context.agents.state.agentsList || context.agents.state.agentsListCached)
-      ) {
+      if (this.host.routeState.routeId && !context.agents.state.agentsList) {
         void connectionBootstrap.run("agents", () =>
           this.ensureAgentsList(snapshot, context.agents),
         );
@@ -383,7 +386,7 @@ export class ShellGatewayOwner {
       return Promise.resolve();
     }
     const routeId = this.host.routeState.routeId;
-    if (!agents || !routeId || (agents.state.agentsList && !agents.state.agentsListCached)) {
+    if (!agents || !routeId || agents.state.agentsList) {
       return Promise.resolve();
     }
     if (this.host.agentsListClient === snapshot.client && this.host.agentsListSource === agents) {

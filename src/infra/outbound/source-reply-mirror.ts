@@ -13,6 +13,7 @@ import { normalizeOutboundLocation } from "../../channels/location.js";
 import { resolveReactionMessageId } from "../../channels/plugins/actions/reaction-message-id.js";
 import { getChannelPlugin } from "../../channels/plugins/index.js";
 import { resolveChannelPluginRegistration } from "../../channels/plugins/registry.js";
+import { resolveLoadedSessionThreadInfo } from "../../channels/plugins/session-thread-info-loaded.js";
 import type { ChannelId, ChannelMessageActionName } from "../../channels/plugins/types.public.js";
 import { resolveChannelThreadAddressing } from "../../channels/thread-addressing.js";
 import type { InternalChannelThreadingToolContext } from "../../channels/threading-tool-context-internal.js";
@@ -24,7 +25,6 @@ import {
   completeRestartRecoveryTerminalDelivery,
   type RestartRecoveryTerminalDeliveryScope,
 } from "../../config/sessions/restart-recovery-receipt.js";
-import { parseSessionThreadInfoFast } from "../../config/sessions/thread-info.js";
 import { getOwnedSessionTranscriptWriterFence } from "../../config/sessions/transcript-write-context.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { normalizeAccountId, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
@@ -130,7 +130,7 @@ function resolveSourceReplyThreadPlacement(
   // Older callers without an admitted fact retain their transport thread;
   // only an explicit false identifies a standalone reply anchor.
   const sessionThreadId = normalizeOptionalString(
-    parseSessionThreadInfoFast(params.sessionKey).threadId,
+    resolveLoadedSessionThreadInfo(params.sessionKey).threadId,
   );
   const sourceConversationThreadId =
     params.actionParams.topLevel === true
@@ -267,7 +267,10 @@ export async function reconcileTerminalSourceReplyDelivery(params: {
     return "not-delivered";
   }
   if (
-    !matchesDeliveredSourceTargets(params.mirror, deliveryFact) ||
+    !matchesDeliveredSourceTargets(
+      { ...params.mirror, deliveredPayload: params.deliveredPayload },
+      deliveryFact,
+    ) ||
     !isExactCurrentSourceConversation({
       ...params.mirror,
       deliveredPayload: params.deliveredPayload,
@@ -373,8 +376,30 @@ function matchesDeliveredSourceTargets(
 ): boolean {
   // Requested routes cannot override contradictory transport facts. Match each
   // reported recipient independently, without inheriting requested thread aliases.
+  // Aggregate metadata cannot hide a physical message delivered to another topic.
+  const receipt = resolveDeliveryReceipt(params);
+  const deliveredThreadId = normalizeOptionalString(receipt?.threadId);
+  const currentThreadId = normalizeOptionalString(params.toolContext?.currentThreadTs);
+  if (
+    Array.isArray(receipt?.parts) &&
+    receipt.parts.some((part) => {
+      const threadId = normalizeOptionalString(asRecord(part)?.threadId);
+      return threadId !== undefined && threadId !== (deliveredThreadId ?? currentThreadId);
+    })
+  ) {
+    return false;
+  }
   return (delivery?.deliveredTargets ?? []).every((target) =>
-    matchesCurrentSourceTarget({ ...params, actionParams: { target } }, "match"),
+    matchesCurrentSourceTarget(
+      {
+        ...params,
+        actionParams: {
+          target,
+          ...(deliveredThreadId ? { threadId: deliveredThreadId } : {}),
+        },
+      },
+      "match",
+    ),
   );
 }
 
