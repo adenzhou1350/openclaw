@@ -106,6 +106,24 @@ TypeScript marks those adapters deprecated. They retain their result shapes and
 completion timing until the next Plugin SDK major and an explicitly approved
 breaking release. No schema, retained data, or update migration changes.
 
+### Watched-session harness context
+
+`buildWatchedSessionsHarnessContext` from
+`openclaw/plugin-sdk/agent-harness-runtime` is deprecated as of October 3, 2026.
+Await `prepareWatchedSessionsHarnessContext` from the same subpath, passing the
+same prompt inputs and a required `assertCurrent` callback bound to the current
+host capability and attempt cancellation. The callback must throw when that
+authority is no longer current; preparation checks it before reads and again
+before disclosing the prepared context.
+
+The awaited helper reads watched-session and session-entry facts in the existing
+database workers. It preserves prompt bytes, ordering, limits, tool availability,
+and visibility gates, and never falls back to caller-thread database reads.
+Bundled harnesses use the awaited helper. The released synchronous helper keeps
+its `string | undefined` result and behavior until the next Plugin SDK major and
+explicit breaking-release approval. JSDoc and the compatibility registry record
+the deprecation; no runtime warning, schema migration, or update change is needed.
+
 ### Harness attempt result migration
 
 In OpenClaw 2026.8.1, `EmbeddedRunAttemptResult` from
@@ -259,6 +277,17 @@ For single-file imports, `defineLegacyJsonStateMigration(...)` skips missing
 sources (`ENOENT`) and values the plugin parser rejects with `null`. Other read
 errors and invalid JSON reach Doctor's detection or migration warnings; the
 source remains untouched so the operator can fix it and retry.
+
+For a format outside the [supported upgrade window](/gateway/doctor/config-migrations#retention-policy),
+use `defineRetiredPluginStateMigration({ id, label, intermediateVersion, findSources })`
+from the same facade. The plugin supplies absolute candidate paths or immediate
+directory selections `{ directory, prefix?, suffix }`; the helper checks existence
+without parsing or changing source bytes. Missing paths are ignored; other read
+errors remain failures. Doctor reports a refusal naming the intermediate release
+and retained files. Supply `recoveryInstructions` when the bridge requires an
+owner-specific step beyond Doctor. Its `assertSupportedState(input, sources?)` operation applies
+the same check at runtime admission; a caller with an already selected file may
+pass that path explicitly. Keep account and workspace discovery with the plugin.
 
 Use `phase: "after-session-repair"` when a migration needs canonical session
 ownership evidence. Ordinary Doctor detects these migrations; `--fix` applies

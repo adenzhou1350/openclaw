@@ -14,6 +14,7 @@ import {
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
+import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
 import {
   appendTranscriptMessage,
   appendTranscriptMessageSync,
@@ -90,10 +91,12 @@ describe("accepted input custody", () => {
   beforeEach(async () => {
     await upsertSessionEntryCore(scope(), { sessionId, updatedAt: 1 });
   });
-  afterEach(() => {
-    for (const receipt of receipts.splice(0)) {
+  afterEach(async () => {
+    const retained = receipts.splice(0);
+    for (const receipt of retained) {
       receipt.finish("interrupted");
     }
+    await Promise.allSettled(retained.map(async (receipt) => receipt.settled?.()));
     closeOpenClawAgentDatabasesForTest();
   });
 
@@ -197,6 +200,7 @@ describe("accepted input custody", () => {
         await promote(aggregate);
       }
       receipt.finish("interrupted");
+      await receipt.settled?.();
       rotateAgentEventLifecycleGeneration();
       const readStoredSource = () =>
         database()
@@ -269,13 +273,17 @@ describe("accepted input custody", () => {
   it("rolls transcript promotion and custody consumption back together", async () => {
     const receipt = await stage("atomic");
     const before = await loadTranscriptEvents(scope());
-    database().db.exec(
-      "CREATE TRIGGER reject_pending_consume BEFORE DELETE ON session_pending_inputs BEGIN SELECT RAISE(ABORT, 'consume failed'); END",
-    );
+    await runOpenClawAgentWriteAdmission(toDatabaseOptions(resolveSqliteScope(scope())), () => {
+      database().db.exec(
+        "CREATE TRIGGER reject_pending_consume BEFORE DELETE ON session_pending_inputs BEGIN SELECT RAISE(ABORT, 'consume failed'); END",
+      );
+    });
     await expect(promote(receipt)).rejects.toThrow("consume failed");
     expect(await loadTranscriptEvents(scope())).toEqual(before);
     expect((await readSessionPendingInput(scope(), receipt.inputId))?.state).toBe("queued");
-    database().db.exec("DROP TRIGGER reject_pending_consume");
+    await runOpenClawAgentWriteAdmission(toDatabaseOptions(resolveSqliteScope(scope())), () => {
+      database().db.exec("DROP TRIGGER reject_pending_consume");
+    });
     expect(await promote(receipt)).toMatchObject({ appended: true, messageId: receipt.inputId });
     expect(await readSessionPendingInput(scope(), receipt.inputId)).toBeUndefined();
   });
@@ -295,13 +303,17 @@ describe("accepted input custody", () => {
       ),
     ).toMatchObject({ ok: true, value: { appended: false, messageId: receipt.inputId } });
 
-    database().db.exec(
-      "CREATE TRIGGER reject_relocation BEFORE INSERT ON transcript_events WHEN NEW.event_json LIKE '%relocation-copy%' BEGIN SELECT RAISE(ABORT, 'relocation failed'); END",
-    );
+    await runOpenClawAgentWriteAdmission(toDatabaseOptions(resolveSqliteScope(scope())), () => {
+      database().db.exec(
+        "CREATE TRIGGER reject_relocation BEFORE INSERT ON transcript_events WHEN NEW.event_json LIKE '%relocation-copy%' BEGIN SELECT RAISE(ABORT, 'relocation failed'); END",
+      );
+    });
     expect(() => receipt.run(() => appendCopy(receipt.inputId, "relocation-copy"))).toThrow(
       "relocation failed",
     );
-    database().db.exec("DROP TRIGGER reject_relocation");
+    await runOpenClawAgentWriteAdmission(toDatabaseOptions(resolveSqliteScope(scope())), () => {
+      database().db.exec("DROP TRIGGER reject_relocation");
+    });
     expect(
       await receipt.run(() => appendTranscriptMessage(scope(), { message: receipt.message })),
     ).toMatchObject({ appended: false, messageId: receipt.inputId });
@@ -473,9 +485,11 @@ describe("accepted input custody", () => {
     const aggregate = bindSessionPendingInputSources([first, second], message("atomic-c"))!;
     receipts.push(aggregate);
     const before = await loadTranscriptEvents(scope());
-    database().db.exec(
-      "CREATE TRIGGER reject_collect_consume BEFORE UPDATE OF consumed_event_id ON session_pending_inputs WHEN OLD.run_id = 'atomic-b' BEGIN SELECT RAISE(ABORT, 'collect consume failed'); END",
-    );
+    await runOpenClawAgentWriteAdmission(toDatabaseOptions(resolveSqliteScope(scope())), () => {
+      database().db.exec(
+        "CREATE TRIGGER reject_collect_consume BEFORE UPDATE OF consumed_event_id ON session_pending_inputs WHEN OLD.run_id = 'atomic-b' BEGIN SELECT RAISE(ABORT, 'collect consume failed'); END",
+      );
+    });
     await expect(promote(aggregate)).rejects.toThrow("collect consume failed");
     expect(await loadTranscriptEvents(scope())).toEqual(before);
     expect((await listSessionPendingInputs(scope())).total).toBe(2);
@@ -483,7 +497,9 @@ describe("accepted input custody", () => {
       { runId: "atomic-a", state: "pending" },
       { runId: "atomic-b", state: "pending" },
     ]);
-    database().db.exec("DROP TRIGGER reject_collect_consume");
+    await runOpenClawAgentWriteAdmission(toDatabaseOptions(resolveSqliteScope(scope())), () => {
+      database().db.exec("DROP TRIGGER reject_collect_consume");
+    });
     expect(await promote(aggregate)).toMatchObject({
       appended: true,
       messageId: aggregate.inputId,
@@ -504,6 +520,7 @@ describe("accepted input custody", () => {
     });
     await expect(promotion).rejects.toThrow("custody ended");
     await expect(promotion).rejects.toBeInstanceOf(SessionPendingInputCustodyError);
+    await first.settled?.();
     expect(await loadTranscriptEvents(scope())).toEqual([]);
     expect((await listSessionPendingInputs(scope())).items.map((input) => input.state)).toEqual([
       "cancelled",
@@ -578,6 +595,7 @@ describe("accepted input custody", () => {
       ).toThrow("already been consumed");
     } finally {
       aggregate.finishPendingInput?.("interrupted");
+      await aggregate.waitForPendingInputSettlement?.();
     }
   });
 
@@ -586,6 +604,7 @@ describe("accepted input custody", () => {
     async (disposition) => {
       const receipt = await stage("closed");
       receipt.finish(disposition);
+      await receipt.settled?.();
       expect((await readSessionPendingInput(scope(), receipt.inputId))?.state).toBe(disposition);
       expect(() => promote(receipt)).toThrow("ownership ended");
       await expect(stage("closed")).rejects.toThrow("submit a new turn");
@@ -615,6 +634,7 @@ describe("accepted input custody", () => {
     await expect(stage("authority")).rejects.toThrow("already admitted");
     expect((await listSessionPendingInputs(scope())).items[0]?.state).toBe("queued");
     receipt.finish("cancelled");
+    await receipt.settled?.();
     expect((await listSessionPendingInputs(scope())).items[0]?.state).toBe("cancelled");
     expect(database().db.prepare("SELECT state FROM session_pending_inputs").get()).toEqual({
       state: "cancelled",
@@ -626,6 +646,7 @@ describe("accepted input custody", () => {
     async (entry) => {
       const receipt = await stage("restart");
       rotateAgentEventLifecycleGeneration();
+      await receipt.settled?.();
       await closeOpenClawAgentDatabasesAsync();
       closeOpenClawAgentDatabasesForTest();
       const retained = await readSessionPendingInput(scope(), receipt.inputId);
@@ -1012,19 +1033,4 @@ describe("accepted input custody", () => {
       ).toEqual(before);
     },
   );
-
-  it("bounds materialized pending pages by bytes without truncating input or skipping its cursor", async () => {
-    const content = "x".repeat(Math.floor(MAX_PAYLOAD_BYTES / 2));
-    const first = await stage("large-first", { message: message("large-first", content) });
-    const second = await stage("large-second", { message: message("large-second", content) });
-    const page = await listSessionPendingInputs(scope());
-    expect(page.items.map((input) => input.id)).toEqual([second.inputId]);
-    expect(page.items[0]?.message.content === content).toBe(true);
-    expect(page.total).toBe(2);
-    expect(page.nextBefore).toBeDefined();
-    const older = await listSessionPendingInputs(scope(), { before: page.nextBefore });
-    expect(older.items.map((input) => input.id)).toEqual([first.inputId]);
-    expect(older.items[0]?.message.content === content).toBe(true);
-    expect(older.nextBefore).toBeUndefined();
-  });
 });

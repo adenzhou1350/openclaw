@@ -183,7 +183,7 @@ async function foldSqliteTouchedFiles(
   scope: SessionTranscriptReadScope,
   cacheKey: string,
 ): Promise<Map<string, TouchedFile>> {
-  let cached = touchedFilesCache.get(cacheKey);
+  const cached = touchedFilesCache.get(cacheKey);
   let cursor = cached?.cursor;
   let files = cached?.files ?? new Map<string, TouchedFile>();
   let maxBytes = TOUCHED_FILES_DELTA_MAX_BYTES;
@@ -199,10 +199,9 @@ async function foldSqliteTouchedFiles(
       return new Map();
     }
     if (delta.kind === "reset") {
-      cached = { cursor: delta.cursor, files: new Map() };
-      cursor = cached.cursor;
-      files = cached.files;
-      touchedFilesCache.set(cacheKey, cached);
+      cursor = delta.cursor;
+      files = new Map();
+      touchedFilesCache.set(cacheKey, { cursor, files });
       continue;
     }
     for (const event of delta.events) {
@@ -211,9 +210,8 @@ async function foldSqliteTouchedFiles(
         collectTouchedFilesFromMessage(message, files);
       }
     }
-    cached = { cursor: delta.cursor, files };
-    cursor = cached.cursor;
-    touchedFilesCache.set(cacheKey, cached);
+    cursor = delta.cursor;
+    touchedFilesCache.set(cacheKey, { cursor, files });
     if (!delta.hasMore) {
       return files;
     }
@@ -265,14 +263,8 @@ function loadSessionFileRoot(params: { sessionKey: string; agentId?: string }) {
 }
 
 /**
- * Canonical workspace root of a session that lives on this Gateway's own disk.
- * Workspace identity surfaces must name the same directory the file routes
- * open, so they read it from here instead of re-deriving the precedence.
- *
- * An exec-node session's directory only exists on the remote host, while the
- * precedence below falls back to the local agent workspace — returning that
- * would describe the wrong machine. `sessions.files.reveal` refuses the same
- * case; callers here get "no local root" and their own absent-workspace path.
+ * Reuse file-route workspace precedence, excluding remote-owned roots.
+ * Exec-node sessions can otherwise fall back to a local agent directory.
  */
 export function resolveLocalSessionWorkspaceRoot(params: {
   sessionKey: string;
@@ -588,35 +580,23 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
       respondSessionFileNotFound(respond, params.path);
       return;
     }
-    if (update.status === "too-large") {
+    if (update.status !== "updated") {
+      const errors = {
+        "too-large": ["session_file_too_large", "session file content is too large"],
+        conflict: ["session_file_conflict", "session file changed since it was read"],
+        unsafe: ["session_file_unsafe", "session file could not be written safely"],
+      } as const;
+      const [type, message] = errors[update.status];
       respond(
         false,
         undefined,
-        sessionFilesError("session_file_too_large", "session file content is too large", {
-          maxPreviewBytes: WORKSPACE_PREVIEW_MAX_BYTES,
+        sessionFilesError(type, message, {
           path: params.path,
-          size: update.size,
-        }),
-      );
-      return;
-    }
-    if (update.status === "conflict") {
-      respond(
-        false,
-        undefined,
-        sessionFilesError("session_file_conflict", "session file changed since it was read", {
-          path: params.path,
-          currentHash: update.currentHash,
-        }),
-      );
-      return;
-    }
-    if (update.status === "unsafe") {
-      respond(
-        false,
-        undefined,
-        sessionFilesError("session_file_unsafe", "session file could not be written safely", {
-          path: params.path,
+          ...(update.status === "too-large"
+            ? { maxPreviewBytes: WORKSPACE_PREVIEW_MAX_BYTES, size: update.size }
+            : update.status === "conflict"
+              ? { currentHash: update.currentHash }
+              : {}),
         }),
       );
       return;
