@@ -25,6 +25,9 @@ export {
 
 // Validator names mirror schemas so callers can pair them with wire contracts.
 export const validateCommandsListParams = compile(S.CommandsListParamsSchema);
+export const validateBackupStatusParams = compile(S.BackupStatusParamsSchema);
+export const validateStorageLocationsListParams = compile(S.StorageLocationsListParamsSchema);
+export const validateStorageLocationsProbeParams = compile(S.StorageLocationsProbeParamsSchema);
 export const validateComputerStatusParams = compile(S.ComputerStatusParamsSchema);
 export const validateComputerInvokeParams = compile(S.ComputerInvokeParamsSchema);
 export const validateCanvasDocumentPreviewParams = compile(S.CanvasDocumentPreviewParamsSchema);
@@ -267,6 +270,7 @@ export const validateSessionCatalogShareRoute = compile(S.SessionCatalogShareRou
 export const validateSessionsCatalogListParams = compile(S.SessionsCatalogListParamsSchema);
 export const validateSessionsCatalogReadParams = compile(S.SessionsCatalogReadParamsSchema);
 export const validateSessionsCatalogContinueParams = compile(S.SessionsCatalogContinueParamsSchema);
+export const validateSessionsCatalogImportParams = compile(S.SessionsCatalogImportParamsSchema);
 export const validateSessionsCatalogArchiveParams = compile(S.SessionsCatalogArchiveParamsSchema);
 export const validateSessionsCatalogStartTerminalParams = compile(
   S.SessionsCatalogStartTerminalParamsSchema,
@@ -279,6 +283,7 @@ export const validateSessionsDescribeParams = compile(S.SessionsDescribeParamsSc
 export const validateSessionsResolveParams = compile(S.SessionsResolveParamsSchema);
 export const validateSessionsFilesListParams = compile(S.SessionsFilesListParamsSchema);
 export const validateSessionsFilesGetParams = compile(S.SessionsFilesGetParamsSchema);
+export const validateSessionsFilesAssetsParams = compile(S.SessionsFilesAssetsParamsSchema);
 export const validateSessionsFilesSetParams = compile(S.SessionsFilesSetParamsSchema);
 export const validateSessionsFilesRevealParams = compile(S.SessionsFilesRevealParamsSchema);
 export const validateSessionsDiffParams = compile(S.SessionsDiffParamsSchema);
