@@ -175,6 +175,10 @@ recorded rollback outcome. Failed steps use stable identifiers such as
 `candidate-state-snapshot`, `candidate-doctor-lint`, and `post-install-verify` in
 the report body and issue title; command arguments and private paths remain redacted.
 Snapshot errors identify the active database, execution approvals, or plugin phase.
+Schema inspection failures put recognized worker error codes and causes before private
+source context, including causes after warning lines, so they survive redaction. Saved
+diagnostic lines omit a path and its trailing text, including quoted paths whose filenames
+may themselves contain spaces or quotes.
 A completed database snapshot does not establish that later plugin paths are readable;
 inspect the source path and filesystem error named by the failing phase.
 A failure during installation or target resolution keeps
@@ -202,6 +206,56 @@ and leaves the installed package in place. Close processes holding that installa
 and check its permissions before retrying. This protection belongs to the installed
 updater; a newer candidate cannot add it to an older updater already running.
 
+## Immutable release installations
+
+An explicitly adopted Linux installation can prepare sealed releases with
+`openclaw update`. Its root contains `releases/<full-commit-sha>` and a `current`
+symlink selecting the running generation. A matching directory layout alone does
+not grant update ownership.
+
+This first slice prepares only: it resolves official `main` once, or accepts an
+exact `--sha <40-hex-commit>`, builds off-path, verifies and seals the candidate,
+and records its preparation. It never publishes `current`, stops or restarts the
+service, runs live migrations, or removes retained generations. Preparation
+failure leaves the serving generation in place. An already-current target skips
+the build. JSON distinguishes `prepared`, `already-current`, `dry-run`, and
+`error`; `prepared` does not mean activated.
+
+`openclaw update --dry-run` reports the immutable target without adoption,
+preparation, or publication. `openclaw update status` includes the current and
+prepared generation identities. Immutable preparation does not switch stored
+channels and rejects package targets such as `--tag`. `--sha` is available only
+for adopted immutable installations. Gateway `update.run` and `update repair`
+refuse activation or post-update maintenance in this slice and direct the
+installation owner to preparation through the CLI.
+
+Explicit adoption belongs to the existing updater CLI:
+
+```bash
+openclaw update adopt-immutable \
+  --root /opt/example \
+  --service example.service \
+  --account openclaw \
+  --state-dir /var/lib/example \
+  --config /etc/example/openclaw.json \
+  --runtime /usr/bin/node \
+  --previous-updater-stopped
+```
+
+Run adoption as root only after the previous updater has settled and stopped
+scheduling. The acknowledgement does not stop another updater for you. Adoption
+verifies the existing systemd unit, fixed nonroot service account, explicit
+effective state/configuration paths and optional `--profile`, external Node
+executable, and sealed current generation before recording ownership. Existing
+systemd environment files are read through the native service reader. Services
+with a different filesystem root, dynamic accounts, or command-line profile
+overrides are not supported. Adoption never edits or restarts the service.
+
+The [immutable update design](/reference/team-immutable-update-design#three-proposed-prs)
+separates preparation from the later activation and recovery work. Existing
+published updaters need explicit adoption after installing an immutable-capable
+release; candidate code cannot change the behavior of an older installed updater.
+
 ## Candidate-owned admission
 
 For package-manager updates, `openclaw update` privately stages the selected
@@ -221,6 +275,10 @@ Other supported filesystems keep the hard-link fast path and copy fallback.
 
 SQLite read-only workers use that retained generation through post-install
 verification, even after the package manager removes the previous package path.
+The updater joins those workers before returning. It records completed runtime
+projections for cleanup by the next eligible update or `openclaw doctor --fix`,
+so recursive deletion does not delay command exit after the final result.
+Cleanup keeps projections while another OpenClaw process may still use them.
 Already-installed older updaters, including 2026.9.6, still run their original
 worker-launch code; installing a corrected candidate cannot repair that first hop.
 
@@ -403,18 +461,18 @@ inherited allowances. Aggregate expiry reports `update-activation-timeout` and
 retains ownership until writers settle; it does not authorize rollback or restart.
 Use `openclaw update status` and Doctor for recovery guidance.
 
-| Flag                                             | Description                                                                                                                                                                                                                                                                                                                                   |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--no-restart`                                   | Skip restarting the Gateway service after a successful update. Package-manager updates that do restart verify the restarted service reports the expected version before the command succeeds.                                                                                                                                                 |
-| `--channel <stable\|extended-stable\|beta\|dev>` | Set the update channel and persist it after core update success. Extended-stable is package-only.                                                                                                                                                                                                                                             |
-| `--tag <dist-tag\|version\|spec>`                | Override the package target for this update only. It cannot be combined with an effective `extended-stable` channel, whose verified exact target is mandatory. Package installs reject the `main` shorthand; use `--channel dev` for the supported checkout and build flow. Other explicit package specs keep their package-manager behavior. |
-| `--dry-run`                                      | Preview planned actions (channel/tag/target/restart flow) without writing config, installing, syncing plugins, or restarting.                                                                                                                                                                                                                 |
-| `--admission <auto\|installed>`                  | Choose candidate admission when supported (`auto`, the default), or force installed admission checks. This option has no environment-variable form. Dry runs always use installed checks.                                                                                                                                                     |
-| `--json`                                         | Print machine-readable `UpdateRunResult` JSON. Includes `postUpdate.plugins.warnings` when a managed plugin needs repair, beta-channel plugin fallback details, and `postUpdate.plugins.integrityDrifts` when npm plugin artifact drift is detected during post-update sync.                                                                  |
-| `--timeout <seconds>`                            | Optional per-step deadline in seconds. Omit to let package installation, deferred lifecycle scripts, and candidate Doctor finish without a work deadline. Probes and recovery retain their own bounds.                                                                                                                                        |
-| `--yes`                                          | Skip confirmation prompts (for example downgrade confirmation).                                                                                                                                                                                                                                                                               |
-| `--reapply-local-overrides`                      | Replay trusted local packaged `dist` edits when the new package has the same baseline. Otherwise preserve them for manual recovery.                                                                                                                                                                                                           |
-| `--accept-capabilities`                          | Accept each plugin's reviewed capability changes during post-update sync. This acknowledges the exact staged capability surface; it does not disable capability checks or establish future trust.                                                                                                                                             |
+| Flag                                             | Description                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--no-restart`                                   | Skip update activation and its trailing Gateway readiness wait, including failure recovery; also applies with `--json`. Records `restart: skipped by operator` when restart stays disabled. Doctor still restores a service it stopped for maintenance, with the existing bounded readiness checks. Package-manager updates that restart still verify the expected Gateway version. |
+| `--channel <stable\|extended-stable\|beta\|dev>` | Set the update channel and persist it after core update success. Extended-stable is package-only.                                                                                                                                                                                                                                                                                   |
+| `--tag <dist-tag\|version\|spec>`                | Override the package target for this update only. It cannot be combined with an effective `extended-stable` channel, whose verified exact target is mandatory. Package installs reject the `main` shorthand; use `--channel dev` for the supported checkout and build flow. Other explicit package specs keep their package-manager behavior.                                       |
+| `--dry-run`                                      | Preview planned actions (channel/tag/target/restart flow) without writing config, installing, syncing plugins, or restarting.                                                                                                                                                                                                                                                       |
+| `--admission <auto\|installed>`                  | Choose candidate admission when supported (`auto`, the default), or force installed admission checks. This option has no environment-variable form. Dry runs always use installed checks.                                                                                                                                                                                           |
+| `--json`                                         | Print machine-readable `UpdateRunResult` JSON. Includes `postUpdate.plugins.warnings` when a managed plugin needs repair, beta-channel plugin fallback details, and `postUpdate.plugins.integrityDrifts` when npm plugin artifact drift is detected during post-update sync.                                                                                                        |
+| `--timeout <seconds>`                            | Optional per-step deadline in seconds. Omit to let package installation, deferred lifecycle scripts, and candidate Doctor finish without a work deadline. Probes and recovery retain their own bounds.                                                                                                                                                                              |
+| `--yes`                                          | Skip confirmation prompts (for example downgrade confirmation).                                                                                                                                                                                                                                                                                                                     |
+| `--reapply-local-overrides`                      | Replay trusted local packaged `dist` edits when the new package has the same baseline. Otherwise preserve them for manual recovery.                                                                                                                                                                                                                                                 |
+| `--accept-capabilities`                          | Accept each plugin's reviewed capability changes during post-update sync. This acknowledges the exact staged capability surface; it does not disable capability checks or establish future trust.                                                                                                                                                                                   |
 
 There is no `--verbose` flag. Use `--dry-run` to preview planned actions,
 `--json` for machine-readable results, and `openclaw update status --json`
@@ -434,7 +492,10 @@ recorded outcome. Reports from older updaters can still contain a `repairing` ph
 Failed steps include the final diagnostics from both output streams; timeouts
 are labeled explicitly. The final report includes the outcome, recorded phase durations, failed steps,
 verification facts, and recovery guidance. `--json` keeps stdout machine-readable and does not
-print progress steps.
+print progress steps or run the progress observer. Progress observes committed
+ledger rows through a reusable read-only worker connection instead of repeatedly
+copying shared state. This applies to updates launched by the fixed updater; a
+published older updater keeps its own progress reader until it is replaced.
 
 When no update is active, `openclaw update status` labels the saved outcome
 `Last recorded update` with the recorded start time, so historical results are
