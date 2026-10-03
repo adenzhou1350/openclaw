@@ -393,9 +393,12 @@ function collectCanonicalSqliteFacts(database: DatabaseSync) {
     .all() as CanonicalIndexTermRow[];
   const triggers = database
     .prepare(`
-    SELECT tbl_name, name, sql FROM sqlite_schema WHERE type = 'trigger' ORDER BY tbl_name, name
+    SELECT t.name AS tbl_name, r.name, r.sql
+    FROM sqlite_schema AS r
+    JOIN sqlite_schema AS t ON t.type = 'table' AND t.name = r.tbl_name COLLATE NOCASE
+    WHERE r.type = 'trigger' ORDER BY t.name, r.name
   `)
-    // SAFETY: canonical trigger catalog rows have text names and nullable text DDL.
+    // SAFETY: bind the target to its table's catalog spelling using SQLite's ASCII name comparison.
     .all() as CanonicalTriggerRow[];
   return {
     tableOptions,
@@ -538,7 +541,7 @@ function collectSqliteTableContractFromRow(
     `
           SELECT name, sql
           FROM sqlite_schema
-          WHERE type = 'trigger' AND tbl_name = ?
+          WHERE type = 'trigger' AND tbl_name = ? COLLATE NOCASE
           ORDER BY name
         `,
     [tableName],
