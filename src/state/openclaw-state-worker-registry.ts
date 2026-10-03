@@ -18,6 +18,7 @@ import type { PlacementSessionToolWorkerOperations } from "../gateway/worker-env
 import type { PlacementTurnClaimWorkerOperations } from "../gateway/worker-environments/placement-turn-claims.worker-contract.js";
 import type { WorkspaceJournalWorkerOperations } from "../gateway/worker-environments/placement-workspace-journal.worker-contract.js";
 import type { WorkerEnvironmentWorkerOperations } from "../gateway/worker-environments/store-worker-contract.js";
+import type { WorkerTranscriptCommitOperations } from "../gateway/worker-environments/transcript-commit-store.worker-contract.js";
 import type { DeliveryQueueWorkerOperations } from "../infra/delivery-queue.worker-contract.js";
 import type { DevicePairingWorkerOperations } from "../infra/device-pairing-worker-contract.js";
 import type { ExecAuthorizationWorkerOperations } from "../infra/exec-approvals-authorization.worker-contract.js";
@@ -35,6 +36,7 @@ import type { NodeWorkerJournalWorkerOperations } from "../node-host/node-worker
 import type { PluginBlobWorkerOperations } from "../plugin-state/plugin-blob-store.worker.js";
 import type { PluginRuntimeWorkerOperations } from "../plugins/state.worker-contract.js";
 import type { ProjectRegistryWorkerOperations } from "../projects/project-registry.worker-contract.js";
+import type { SkillLibraryWorkerOperations } from "../skills/library/store.worker-contract.js";
 import type { SkillUploadWorkerOperations } from "../skills/lifecycle/upload-store.worker-contract.js";
 import type {
   SkillWorkshopWorkerOperations,
@@ -76,6 +78,7 @@ export type RegisteredStateWorkerOperations = ClawProvenanceWriteOperations &
   ChannelIngressWorkerOperations &
   AcpSessionWriteOperations &
   SkillUploadWorkerOperations &
+  SkillLibraryWorkerOperations &
   SkillWorkshopWorkerOperations &
   SkillCuratorOperations &
   TranscriptWriteOperations &
@@ -88,6 +91,7 @@ export type RegisteredStateWorkerOperations = ClawProvenanceWriteOperations &
   PlacementTurnClaimWorkerOperations &
   WorkspaceJournalWorkerOperations &
   WorkerEnvironmentWorkerOperations &
+  WorkerTranscriptCommitOperations &
   RepositoryWorkspaceWorkerOperations &
   UserProfileWorkerOperations;
 
@@ -120,6 +124,8 @@ export const stateWorkerRegistry = createWorkerOperationRegistry<RegisteredState
   plugins: () => import("../plugins/state.worker.js").then((m) => m.pluginRuntimeOperations),
   acp: () =>
     import("../acp/runtime/session-meta-write.worker.js").then((m) => m.acpSessionOperations),
+  skillLibrary: () =>
+    import("../skills/library/store.worker.js").then((m) => m.skillLibraryOperations),
   skillUploads: () =>
     import("../skills/lifecycle/upload-store.worker.js").then((m) => m.skillUploadOperations),
   workshop: () =>
@@ -191,6 +197,10 @@ export const stateWorkerRegistry = createWorkerOperationRegistry<RegisteredState
   placementJournals: () =>
     import("../gateway/worker-environments/placement-workspace-journal.worker.js").then(
       (m) => m.workspaceJournalOperations,
+    ),
+  placementTranscript: () =>
+    import("../gateway/worker-environments/transcript-commit-store.worker.js").then(
+      (m) => m.workerTranscriptCommitOperations,
     ),
   workerEnvironments: () =>
     import("../gateway/worker-environments/store.worker.js").then(
