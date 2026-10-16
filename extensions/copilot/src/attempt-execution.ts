@@ -13,6 +13,7 @@ import {
   clearActiveEmbeddedRun,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { normalizeAcceptedSessionSpawnResult } from "openclaw/plugin-sdk/agent-harness-tool-runtime";
+import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { registerCopilotActiveRun } from "./attempt-active-run.js";
 import { deferBackgroundCompactionCleanup } from "./attempt-cleanup.js";
 import {
@@ -43,7 +44,7 @@ import type {
 import { createCopilotByokProxy } from "./byok-proxy.js";
 import { attachEventBridge, type SessionLike } from "./event-bridge.js";
 import { createPromptError } from "./prompt-error.js";
-import { classifyResumeFailure, decideReplayAction } from "./replay-shim.js";
+import { isMissingCopilotSessionError } from "./replay-shim.js";
 import type { PooledClient } from "./runtime.js";
 import type { CopilotUserInputBridge } from "./user-input-bridge.js";
 export async function runCopilotExecution(context: {
@@ -337,16 +338,15 @@ export async function runCopilotExecution(context: {
       userInputBridge,
     } = sessionSetup;
     userInputBridgeRef = userInputBridge;
-    const replayDecision = decideReplayAction({
-      sdkSessionId: input.initialReplayState?.sdkSessionId,
-      replayInvalid: input.initialReplayState?.replayInvalid,
-    });
-    downgradedFromResume = replayDecision.downgradedFromResume;
+    const previousSessionId = normalizeOptionalString(input.initialReplayState?.sdkSessionId);
+    downgradedFromResume = Boolean(
+      previousSessionId && input.initialReplayState?.replayInvalid === true,
+    );
     const resumeSessionId = settledToolFinalization
       ? settledFinalizationSessionId
-      : replayDecision.action === "resume"
-        ? replayDecision.sdkSessionId
-        : undefined;
+      : downgradedFromResume
+        ? undefined
+        : previousSessionId;
     if (resumeSessionId) {
       try {
         session = (await client.resumeSession(resumeSessionId, {
@@ -364,8 +364,7 @@ export async function runCopilotExecution(context: {
             error,
           );
         }
-        const classification = classifyResumeFailure(error);
-        if (!classification.recoverable) {
+        if (!isMissingCopilotSessionError(error)) {
           throw error;
         }
         resumeFailureRecovered = true;
@@ -384,7 +383,7 @@ export async function runCopilotExecution(context: {
     if (!sdkSessionId) {
       throw createPromptError(
         "transcript_persistence_failed",
-        "[copilot-attempt] canonical transcript persistence requires the Copilot SDK session id",
+        "[copilot-attempt] saved transcript persistence requires the Copilot SDK session id",
       );
     }
     if (deps.onSessionEstablished && !settledToolFinalization) {
@@ -395,7 +394,9 @@ export async function runCopilotExecution(context: {
           pooledClient: handle,
           sessionConfig,
         });
-      } catch {}
+      } catch {
+        // Binding observers are best effort; the journal still owns transcript writes.
+      }
     }
     transcriptJournal = createAttemptTranscriptJournal({
       abortSession: () => session?.abort() ?? Promise.resolve(),
@@ -513,7 +514,9 @@ export async function runCopilotExecution(context: {
         timedOutDuringCompaction = bridge?.isCompacting() === true;
         try {
           await bridge?.awaitDeltaChain();
-        } catch {}
+        } catch {
+          // Preserve the timeout and still drain canonical transcript writes below.
+        }
         await bridge?.awaitAgentEventChain();
         bridge?.flushTranscriptProjection();
         try {
@@ -590,7 +593,9 @@ export async function runCopilotExecution(context: {
             cleanup,
             sdkSessionId,
           });
-        } catch {}
+        } catch {
+          // A cleanup observer cannot replace the turn's already-selected outcome.
+        }
       }
       params.abortSignal?.removeEventListener("abort", abortActiveSession);
     } else {
