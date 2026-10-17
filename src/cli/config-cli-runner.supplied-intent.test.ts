@@ -61,10 +61,11 @@ vi.mock("../runtime.js", () => ({
   ExitError: class ExitError extends Error {},
   writeRuntimeJson: vi.fn(),
 }));
-vi.mock("./config-cli-input.js", () => ({ formatPluginInstallConfigSetError: vi.fn() }));
+// mock-isolation: Keep metadata discovery outside this ordered path-intent runner boundary.
 vi.mock("./config-cli-model-normalization.js", () => ({
   normalizeConfigMutationModelRefs: (value: unknown) => value,
   normalizeConfigMutationExplicitSetPath: (path: string[]) => path,
+  shouldNormalizeConfigMutationProviderCatalogs: () => true,
 }));
 vi.mock("./config-set-dryrun.js", () => ({
   ConfigSetDryRunValidationError: class extends Error {},
@@ -239,7 +240,7 @@ describe("ordered runner supplied intent after deletion", () => {
     },
     {
       name: "nested array below a canonical agent ID",
-      config: { agents: { list: [{ id: "1", tools: { allow: ["first", "second", "third"] } }] } },
+      config: { agents: { entries: { "1": { tools: { allow: ["first", "second", "third"] } } } } },
       operations: [
         op("set", ["agents", "list", "0", "tools", "allow", "2"], "edited"),
         op("delete", ["agents", "list", "0", "tools", "allow", "0"]),
@@ -270,11 +271,12 @@ describe("ordered runner supplied intent after deletion", () => {
     const result = await apply(
       {
         agents: {
-          list: [
-            { id: "0", name: "zero" },
-            { id: "1", name: "one" },
-            { id: "2", name: "two" },
-          ],
+          ownership: "explicit",
+          entries: {
+            "0": { name: "zero" },
+            "1": { name: "one" },
+            "2": { name: "two" },
+          },
         },
       },
       [

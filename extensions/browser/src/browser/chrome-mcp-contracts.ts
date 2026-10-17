@@ -1,4 +1,3 @@
-// Shared Chrome MCP contracts and constants.
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
@@ -87,7 +86,6 @@ export type ChromeMcpPageProbe = {
 
 export const MCP_REQUEST_TIMEOUT_CODE: number = ErrorCode.RequestTimeout;
 
-/** Browser profile options used to connect or launch chrome-devtools-mcp. */
 export type ChromeMcpProfileOptions = {
   userDataDir?: string;
   cdpUrl?: string;
@@ -116,25 +114,11 @@ export type ChromeMcpSessionLease = {
   release: () => Promise<void>;
 };
 
-export type ChromeMcpSessionFactory = (
-  profileName: string,
-  options?: NormalizedChromeMcpProfileOptions,
-) => Promise<ChromeMcpSession>;
-
 /** One OS snapshot row: ancestry and immutable birth identity from the same read. */
 export type ChromeMcpProcessSnapshot = {
   pid: number;
   ppid: number;
   identity: string;
-};
-
-/** Injectable process cleanup dependencies for platform-specific tests. */
-export type ChromeMcpProcessCleanupDeps = {
-  listProcesses?: () => Promise<ChromeMcpProcessSnapshot[]>;
-  killProcess?: (pid: number, signal: NodeJS.Signals) => void;
-  sleep?: (ms: number) => Promise<void>;
-  platform?: NodeJS.Platform;
-  taskkillProcessTree?: (pid: number) => Promise<void>;
 };
 
 export type ChromeMcpOwnedProcess = Pick<ChromeMcpProcessSnapshot, "pid" | "identity">;

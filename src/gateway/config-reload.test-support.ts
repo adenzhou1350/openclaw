@@ -25,8 +25,15 @@ import { installWatcherMock } from "./config-reload.watcher.test-support.js";
 const activeReloaders = new Set<ReturnType<typeof startGatewayConfigReloaderImpl>>();
 let currentTest: { timeout: number; signal: AbortSignal } | undefined;
 
-export function prepareConfigReloadTest({ task, signal }: TestContext) {
+export function prepareConfigReloadTest(
+  { task, signal }: TestContext,
+  options: { mockWatcher?: boolean } = {},
+) {
   currentTest = { timeout: task.timeout, signal };
+  if (options.mockWatcher) {
+    const watcher = installWatcherMock();
+    onTestFinished(() => watcher.restore());
+  }
 }
 
 export function createConfigReloadTestClock() {
@@ -57,16 +64,22 @@ export function createPluginLifecycleLeaseTestClock() {
     return completion;
   });
   const withLease = pluginLifecycleLease.withPluginLifecycleLease;
-  let firstCompletion: ReturnType<typeof withLease> | undefined;
+  const withCleanupLease = pluginLifecycleLease.withPluginArtifactCleanupLease;
+  let firstCompletion: Promise<unknown> | undefined;
+  const trackLease = <T>(start: () => Promise<T>): Promise<T> => {
+    const completion = leaseScope.run(true, start);
+    firstCompletion ??= completion;
+    return completion;
+  };
   const leaseSpy = vi
     .spyOn(pluginLifecycleLease, "withPluginLifecycleLease")
-    .mockImplementation((options, run) => {
-      const completion = leaseScope.run(true, () => withLease(options, run));
-      firstCompletion ??= completion;
-      return completion;
-    });
+    .mockImplementation((options, run) => trackLease(() => withLease(options, run)));
+  const cleanupLeaseSpy = vi
+    .spyOn(pluginLifecycleLease, "withPluginArtifactCleanupLease")
+    .mockImplementation((options, run) => trackLease(() => withCleanupLease(options, run)));
   onTestFinished(() => {
     leaseSpy.mockRestore();
+    cleanupLeaseSpy.mockRestore();
     sleepSpy.mockRestore();
   });
   const waitFor = async <T>(completion: Promise<T>): Promise<T> => {
