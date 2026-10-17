@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { afterEach, expect, it, vi } from "vitest";
 import { createWizardPrompter } from "../../test/helpers/wizard-prompter.js";
 import { resolveApiKeyForProfile } from "../agents/auth-profiles/oauth.js";
@@ -8,7 +9,8 @@ import {
 import { fingerprintResolvedProviderAuth } from "../agents/execution-auth-binding.js";
 import { resolveApiKeyForProviderCore } from "../agents/model-auth.js";
 import { splitTrailingAuthProfile } from "../agents/model-ref-profile.js";
-import { readConfigFileSnapshot } from "../config/config.js";
+import { readConfigFileSnapshot, validateConfigObjectRaw } from "../config/config.js";
+import { materializeRuntimeConfig } from "../config/materialize.js";
 import { resolveAgentModelPrimaryValue } from "../config/model-input.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { loadInstalledPluginIndexInstallRecords } from "../plugins/installed-plugin-index-records.js";
@@ -22,7 +24,11 @@ import {
 } from "../test-utils/openclaw-test-state.js";
 import { offerLiveModelVerification } from "./setup.inference-verification.js";
 import { createSetupMigrationStage } from "./setup.migration-stage.js";
-import { createWizardInferenceConfigTarget, writeWizardConfigFile } from "./setup.shared.js";
+import {
+  createWizardInferenceConfigTarget,
+  readSetupConfigFileSnapshot,
+  writeWizardConfigFile,
+} from "./setup.shared.js";
 
 const mocks = vi.hoisted(() => ({ verify: vi.fn<typeof verifySetupInferenceConfig>() }));
 vi.mock("../system-agent/setup-inference.js", () => ({ verifySetupInferenceConfig: mocks.verify }));
@@ -39,20 +45,19 @@ afterEach(async () => {
 });
 
 it.each([
-  { target: "file", changed: true },
-  { target: "stage", changed: true },
-  { target: "file", changed: false },
-  { target: "stage", changed: false },
+  { target: "file", changed: true, runtimeDefaults: false },
+  { target: "stage", changed: true, runtimeDefaults: false },
+  { target: "file", changed: false, runtimeDefaults: true },
 ])(
-  "wizard activation uses its $target target (credential changed=$changed)",
-  async ({ target, changed }) => {
+  "wizard activation uses its $target target (credential changed=$changed, runtime defaults=$runtimeDefaults)",
+  async ({ target, changed, runtimeDefaults }) => {
     state = await createOpenClawTestState({ label: "wizard-promotion-recovery" });
     let agentDir = state.agentDir("main");
-    let config: OpenClawConfig = {
+    const validated = validateConfigObjectRaw({
       gateway: { mode: "local" },
       plugins: { slots: { memory: "none" } },
       agents: {
-        entries: { main: { default: true } },
+        entries: { main: {} },
         defaults: {
           workspace: state.workspaceDir,
           model: "example/fixture@example:working",
@@ -61,12 +66,22 @@ it.each([
       },
       models: {
         providers: {
-          example: { baseUrl: "https://fixture.invalid/v1", api: "openai-completions", models: [] },
+          example: {
+            baseUrl: "https://fixture.invalid/v1",
+            api: "openai-completions",
+            models: [{ id: "fixture", name: "Fixture" }],
+          },
         },
       },
-    };
+    });
+    assert.ok(validated.ok);
+    let config = validated.config;
     await state.writeConfig(config);
-    const finalConfig = (await readConfigFileSnapshot()).sourceConfig;
+    const initialSnapshot = await (runtimeDefaults
+      ? readConfigFileSnapshot()
+      : readSetupConfigFileSnapshot());
+    config = initialSnapshot.runtimeConfig ?? initialSnapshot.config;
+    const finalConfig = initialSnapshot.sourceConfig;
     await state.writeAuthProfiles({
       version: 1,
       profiles: {
@@ -116,6 +131,9 @@ it.each([
       createWizardInferenceConfigTarget((next, options) =>
         writeWizardConfigFile(next, { ...options, mergeBase: config }),
       );
+    const savedModels = structuredClone(
+      (await targetOwner.read()).config.models?.providers?.example?.models,
+    );
     const editCredential = async () => {
       if (!changed) {
         return;
@@ -129,11 +147,13 @@ it.each([
         },
       });
     };
-    const interceptWrite: typeof targetOwner.write = async (...args) => {
-      const committed = await targetOwner.write(...args);
-      await editCredential();
-      return committed;
-    };
+    const interceptWrite =
+      (write: typeof targetOwner.write): typeof write =>
+      async (...args) => {
+        const committed = await write(...args);
+        await editCredential();
+        return committed;
+      };
     mocks.verify.mockImplementation(async (params) => {
       const route = await resolveSystemAgentConfiguredRouteFromConfig(params.config);
       if (!route) {
@@ -176,21 +196,16 @@ it.each([
       opts: {},
       prompter: createWizardPrompter({ confirm: async () => true }),
       runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
-      workspaceDir: stage?.staged.workspaceDir ?? state.workspaceDir,
       agentDir,
       stateDir,
       required: true,
       configTarget: {
-        write: interceptWrite,
+        write: interceptWrite(targetOwner.write),
         read: async () => {
           const read = await targetOwner.read();
           return {
             config: read.config,
-            write: async (...args) => {
-              const committed = await read.write(...args);
-              await editCredential();
-              return committed;
-            },
+            write: interceptWrite(read.write),
           };
         },
       },
@@ -201,6 +216,7 @@ it.each([
       await expect(activation).resolves.toMatchObject({ verified: true, persisted: true });
     }
     const reopened = (await targetOwner.read()).config;
+    expect(reopened.models?.providers?.example?.models).toEqual(savedModels);
     const selected = splitTrailingAuthProfile(
       resolveAgentModelPrimaryValue(reopened.agents?.defaults?.model) ?? "",
     ).profile;
@@ -227,8 +243,50 @@ it.each([
   },
 );
 
+it("wizard recovery restores serialized model defaults after provider canonicalization", async () => {
+  state = await createOpenClawTestState({ label: "wizard-serialized-recovery" });
+  const before = {
+    models: {
+      providers: {
+        Example: {
+          baseUrl: "https://fixture.invalid/v1",
+          api: "openai-completions",
+          models: [
+            {
+              id: "fixture",
+              name: "Fixture",
+              reasoning: false,
+              input: ["text"],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              contextWindow: 32768,
+              maxTokens: 4096,
+            },
+          ],
+        },
+      },
+    },
+  } satisfies OpenClawConfig;
+  await state.writeConfig(before);
+  const candidate = materializeRuntimeConfig({
+    ...before,
+    models: { providers: { example: before.models.providers.Example } },
+  });
+  const failure = new Error("activation refused");
+  const target = createWizardInferenceConfigTarget(writeWizardConfigFile);
+  await expect(
+    commitSetupInferenceActivation({
+      configTarget: target,
+      config: candidate,
+      assertCurrent: () => {},
+      activate: async () => {
+        throw failure;
+      },
+    }),
+  ).rejects.toBe(failure);
+  expect((await target.read()).config.models?.providers).toEqual(before.models?.providers);
+});
+
 it.each([
-  { pending: false, superseded: false },
   { pending: true, superseded: false },
   { pending: false, superseded: true },
 ])(

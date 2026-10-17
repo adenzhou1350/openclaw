@@ -6,6 +6,7 @@ import type { NativeGatewaysSnapshot } from "../app/native-gateways.runtime.ts";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
+import { serveCompanion } from "./native-desktop.test-support.ts";
 
 const suite = createControlUiE2eSuite({ name: "Native desktop Gateways E2E" });
 const companionFile = (file: string) =>
@@ -68,37 +69,6 @@ async function capture(page: Page, directory: string | undefined, name: string) 
   if (directory) {
     await page.screenshot({ path: path.join(directory, name), animations: "disabled" });
   }
-}
-
-async function serveCompanion(page: Page) {
-  await page.route("**/companion/**", (route) => {
-    const { pathname } = new URL(route.request().url());
-    const file = pathname.slice(pathname.indexOf("/companion/") + "/companion/".length);
-    const sharedFont = [
-      "instrument-sans-latin.woff2",
-      "instrument-sans-latin-ext.woff2",
-      "instrument-sans-OFL.txt",
-    ].includes(file);
-    return route.fulfill({
-      contentType: file.endsWith(".js")
-        ? "text/javascript"
-        : file.endsWith(".css")
-          ? "text/css"
-          : file.endsWith(".svg")
-            ? "image/svg+xml"
-            : file.endsWith(".woff2")
-              ? "font/woff2"
-              : file.endsWith(".txt")
-                ? "text/plain"
-                : "text/html",
-      body: readFileSync(
-        new URL(
-          sharedFont ? `../../public/fonts/${file}` : `../../../apps/linux/ui/${file}`,
-          import.meta.url,
-        ),
-      ),
-    });
-  });
 }
 
 suite.define(() => {
@@ -198,6 +168,10 @@ suite.define(() => {
         await page.locator(".sidebar-identity-card").click();
         await page.locator(".sidebar-identity-menu").waitFor();
       };
+      const openGatewayMenu = async (currentGatewayName: string) => {
+        await openMenu();
+        await page.getByRole("menuitem", { name: currentGatewayName, exact: true }).click();
+      };
       await openMenu();
       expect(await page.getByRole("menuitemradio", { name: /Studio/ }).count()).toBe(0);
       await capture(page, proof, "gateway-menu-before.png");
@@ -210,7 +184,10 @@ suite.define(() => {
       });
       await page.reload();
       await page.getByRole("alert").filter({ hasText: "unavailable during startup" }).waitFor();
-      await openMenu();
+      await openGatewayMenu("Local Gateway");
+      expect(
+        await page.getByRole("menuitem", { name: "Get the apps", exact: true }).isVisible(),
+      ).toBe(true);
       const studio = page.getByRole("menuitemradio", { name: /Studio/ });
       await studio.waitFor();
       await capture(page, proof, "gateway-menu-after.png");
@@ -224,15 +201,15 @@ suite.define(() => {
         },
       ]);
       await ready(page, "next-document", "profile:studio");
-      await openMenu();
+      await openGatewayMenu("Studio");
       await expect.poll(() => studio.getAttribute("aria-checked")).toBe("true");
       await page
         .getByRole("menuitemradio", { name: /Local Gateway/ })
         .click({ modifiers: ["Control"] });
-      await openMenu();
-      await page.locator('wa-dropdown-item[value="command:gateway-set-primary"]').click();
-      await openMenu();
-      await page.locator('wa-dropdown-item[value="command:gateway-settings"]').click();
+      await openGatewayMenu("Studio");
+      await page.locator('[data-value="command:gateway-set-primary"]').click();
+      await openGatewayMenu("Studio");
+      await page.locator('[data-value="command:gateway-settings"]').click();
       await page
         .getByRole("alert")
         .filter({ hasText: "Could not open Gateway settings" })
@@ -265,7 +242,7 @@ suite.define(() => {
           params: { message: { type: "open-settings" }, token: "next-document" },
         },
       ]);
-      await openMenu();
+      await openGatewayMenu("Studio");
       await page.getByRole("menuitemradio", { name: /Local Gateway/ }).click();
       await expect.poll(() => page.getByRole("alert").count()).toBe(0);
       for (const source of ["native", "invoke"] as const) {

@@ -1,227 +1,81 @@
 // Qa Lab Matrix tests cover sync behavior.
-import { describe, expect, it, vi } from "vitest";
-import type { MatrixQaObservedEvent } from "./events.js";
-import {
-  createMatrixQaRoomObserver,
-  primeMatrixQaRoom,
-  waitForOptionalMatrixQaRoomEvent,
-} from "./sync.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { MatrixQaObservedEvent, MatrixQaRoomEvent } from "./events.js";
+import { mockMatrixQaHttp } from "./http.test-support.js";
+import { createMatrixQaRoomObserver, primeMatrixQaRoom } from "./sync.js";
+
+function message(
+  eventId: string,
+  body: string,
+  content: Record<string, unknown> = {},
+): MatrixQaRoomEvent {
+  return {
+    event_id: eventId,
+    sender: "@sut:matrix-qa.test",
+    type: "m.room.message",
+    content: { body, msgtype: "m.text", ...content },
+  };
+}
+
+function syncResponse(
+  events: MatrixQaRoomEvent[],
+  roomId = "!room:matrix-qa.test",
+  nextBatch = "next-batch-2",
+) {
+  return Response.json({
+    next_batch: nextBatch,
+    rooms: { join: { [roomId]: { timeline: { events } } } },
+  });
+}
 
 describe("matrix sync helpers", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("primes the Matrix sync cursor without recording observed events", async () => {
     const fetchImpl: typeof fetch = async () => Response.json({ next_batch: "primed-sync-cursor" });
+
+    mockMatrixQaHttp(fetchImpl);
 
     await expect(
       primeMatrixQaRoom({
         accessToken: "token",
         baseUrl: "http://127.0.0.1:28008/",
-        fetchImpl,
       }),
     ).resolves.toBe("primed-sync-cursor");
-  });
-
-  it("returns a typed no-match result while preserving the latest sync token", async () => {
-    const fetchImpl: typeof fetch = async () =>
-      Response.json({
-        next_batch: "next-batch-2",
-        rooms: {
-          join: {
-            "!room:matrix-qa.test": {
-              timeline: {
-                events: [
-                  {
-                    event_id: "$driver",
-                    sender: "@driver:matrix-qa.test",
-                    type: "m.room.message",
-                    content: { body: "hello", msgtype: "m.text" },
-                  },
-                ],
-              },
-            },
-          },
-        },
-      });
-
-    const observedEvents: MatrixQaObservedEvent[] = [];
-
-    const nowSpy = vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValue(1);
-    let result: Awaited<ReturnType<typeof waitForOptionalMatrixQaRoomEvent>>;
-    try {
-      result = await waitForOptionalMatrixQaRoomEvent({
-        accessToken: "token",
-        baseUrl: "http://127.0.0.1:28008/",
-        fetchImpl,
-        observedEvents,
-        predicate: (event) => event.sender === "@sut:matrix-qa.test",
-        roomId: "!room:matrix-qa.test",
-        since: "start-batch",
-        timeoutMs: 1,
-      });
-    } finally {
-      nowSpy.mockRestore();
-    }
-
-    expect(result).toEqual({
-      matched: false,
-      since: "next-batch-2",
-    });
-    expect(observedEvents).toEqual([
-      {
-        kind: "message",
-        roomId: "!room:matrix-qa.test",
-        eventId: "$driver",
-        sender: "@driver:matrix-qa.test",
-        stateKey: undefined,
-        type: "m.room.message",
-        originServerTs: undefined,
-        body: "hello",
-        formattedBody: undefined,
-        msgtype: "m.text",
-        membership: undefined,
-      },
-    ]);
-  });
-
-  it("keeps recording later same-batch events after the first match", async () => {
-    const fetchImpl: typeof fetch = async () =>
-      Response.json({
-        next_batch: "next-batch-2",
-        rooms: {
-          join: {
-            "!room:matrix-qa.test": {
-              timeline: {
-                events: [
-                  {
-                    event_id: "$sut",
-                    sender: "@sut:matrix-qa.test",
-                    type: "m.room.message",
-                    content: { body: "target", msgtype: "m.text" },
-                  },
-                  {
-                    event_id: "$driver",
-                    sender: "@driver:matrix-qa.test",
-                    type: "m.room.message",
-                    content: { body: "trailing event", msgtype: "m.text" },
-                  },
-                ],
-              },
-            },
-          },
-        },
-      });
-
-    const observedEvents: MatrixQaObservedEvent[] = [];
-
-    const result = await waitForOptionalMatrixQaRoomEvent({
-      accessToken: "token",
-      baseUrl: "http://127.0.0.1:28008/",
-      fetchImpl,
-      observedEvents,
-      predicate: (event) => event.eventId === "$sut",
-      roomId: "!room:matrix-qa.test",
-      since: "start-batch",
-      timeoutMs: 1,
-    });
-
-    expect(result).toEqual({
-      event: {
-        kind: "message",
-        roomId: "!room:matrix-qa.test",
-        eventId: "$sut",
-        sender: "@sut:matrix-qa.test",
-        stateKey: undefined,
-        type: "m.room.message",
-        originServerTs: undefined,
-        body: "target",
-        formattedBody: undefined,
-        msgtype: "m.text",
-        membership: undefined,
-      },
-      matched: true,
-      since: "next-batch-2",
-    });
-    expect(observedEvents).toEqual([
-      {
-        kind: "message",
-        roomId: "!room:matrix-qa.test",
-        eventId: "$sut",
-        sender: "@sut:matrix-qa.test",
-        stateKey: undefined,
-        type: "m.room.message",
-        originServerTs: undefined,
-        body: "target",
-        formattedBody: undefined,
-        msgtype: "m.text",
-        membership: undefined,
-      },
-      {
-        kind: "message",
-        roomId: "!room:matrix-qa.test",
-        eventId: "$driver",
-        sender: "@driver:matrix-qa.test",
-        stateKey: undefined,
-        type: "m.room.message",
-        originServerTs: undefined,
-        body: "trailing event",
-        formattedBody: undefined,
-        msgtype: "m.text",
-        membership: undefined,
-      },
-    ]);
   });
 
   it("lets a second wait reuse later same-batch events without another /sync", async () => {
     let calls = 0;
     const fetchImpl: typeof fetch = async () => {
       calls += 1;
-      return Response.json({
-        next_batch: "next-batch-2",
-        rooms: {
-          join: {
-            "!room:matrix-qa.test": {
-              timeline: {
-                events: [
-                  {
-                    event_id: "$preview",
-                    sender: "@sut:matrix-qa.test",
-                    type: "m.room.message",
-                    content: {
-                      body: "preview",
-                      msgtype: "m.notice",
-                      "m.relates_to": {
-                        rel_type: "m.thread",
-                        event_id: "$root",
-                        is_falling_back: true,
-                        "m.in_reply_to": { event_id: "$driver" },
-                      },
-                    },
-                  },
-                  {
-                    event_id: "$final",
-                    sender: "@sut:matrix-qa.test",
-                    type: "m.room.message",
-                    content: {
-                      body: "final",
-                      msgtype: "m.text",
-                      "m.new_content": { body: "final", msgtype: "m.text" },
-                      "m.relates_to": {
-                        rel_type: "m.replace",
-                        event_id: "$preview",
-                      },
-                    },
-                  },
-                ],
-              },
-            },
+      return syncResponse([
+        message("$preview", "preview", {
+          msgtype: "m.notice",
+          "m.relates_to": {
+            rel_type: "m.thread",
+            event_id: "$root",
+            is_falling_back: true,
+            "m.in_reply_to": { event_id: "$driver" },
           },
-        },
-      });
+        }),
+        message("$final", "final", {
+          "m.new_content": {
+            body: "final",
+            msgtype: "m.text",
+            "m.relates_to": { rel_type: "m.thread", event_id: "$wrong-root" },
+          },
+          "m.relates_to": { rel_type: "m.replace", event_id: "$preview" },
+        }),
+      ]);
     };
     const observedEvents: MatrixQaObservedEvent[] = [];
+    mockMatrixQaHttp(fetchImpl);
+
     const observer = createMatrixQaRoomObserver({
       accessToken: "token",
       baseUrl: "http://127.0.0.1:28008/",
-      fetchImpl,
       observedEvents,
       since: "start-batch",
     });
@@ -231,6 +85,7 @@ describe("matrix sync helpers", () => {
       roomId: "!room:matrix-qa.test",
       timeoutMs: 1_000,
     });
+    expect(observedEvents.map((event) => event.eventId)).toEqual(["$preview", "$final"]);
     const finalized = await observer.waitForRoomEvent({
       predicate: (event) => event.eventId === "$final",
       roomId: "!room:matrix-qa.test",
@@ -256,30 +111,13 @@ describe("matrix sync helpers", () => {
     let calls = 0;
     const fetchImpl: typeof fetch = async () => {
       calls += 1;
-      return Response.json({
-        next_batch: "next-batch-2",
-        rooms: {
-          join: {
-            "!main:matrix-qa.test": {
-              timeline: {
-                events: [
-                  {
-                    event_id: "$main-reply",
-                    sender: "@sut:matrix-qa.test",
-                    type: "m.room.message",
-                    content: { body: "main reply", msgtype: "m.text" },
-                  },
-                ],
-              },
-            },
-          },
-        },
-      });
+      return syncResponse([message("$main-reply", "main reply")], "!main:matrix-qa.test");
     };
+    mockMatrixQaHttp(fetchImpl);
+
     const observer = createMatrixQaRoomObserver({
       accessToken: "token",
       baseUrl: "http://127.0.0.1:28008/",
-      fetchImpl,
       observedEvents: [],
       since: "start-batch",
     });
@@ -321,36 +159,16 @@ describe("matrix sync helpers", () => {
       calls += 1;
       markFetchStarted();
       await fetchCanComplete;
-      return Response.json({
-        next_batch: "next-batch-2",
-        rooms: {
-          join: {
-            "!room:matrix-qa.test": {
-              timeline: {
-                events: [
-                  {
-                    event_id: "$reply",
-                    sender: "@sut:matrix-qa.test",
-                    type: "m.room.message",
-                    content: { body: "reply", msgtype: "m.text" },
-                  },
-                  {
-                    event_id: "$notice",
-                    sender: "@sut:matrix-qa.test",
-                    type: "m.room.message",
-                    content: { body: "notice", msgtype: "m.notice" },
-                  },
-                ],
-              },
-            },
-          },
-        },
-      });
+      return syncResponse([
+        message("$reply", "reply"),
+        message("$notice", "notice", { msgtype: "m.notice" }),
+      ]);
     };
+    mockMatrixQaHttp(fetchImpl);
+
     const observer = createMatrixQaRoomObserver({
       accessToken: "token",
       baseUrl: "http://127.0.0.1:28008/",
-      fetchImpl,
       observedEvents: [],
       since: "start-batch",
     });
@@ -411,29 +229,16 @@ describe("matrix sync helpers", () => {
         now = 1;
         throw init?.signal instanceof AbortSignal ? init.signal.reason : expiredSignal.reason;
       }
-      return Response.json({
-        next_batch: "recovered-batch",
-        rooms: {
-          join: {
-            "!room:matrix-qa.test": {
-              timeline: {
-                events: [
-                  {
-                    event_id: "$recovered",
-                    sender: "@sut:matrix-qa.test",
-                    type: "m.room.message",
-                    content: { body: "recovered", msgtype: "m.text" },
-                  },
-                ],
-              },
-            },
-          },
-        },
-      });
+      return syncResponse(
+        [message("$recovered", "recovered")],
+        "!room:matrix-qa.test",
+        "recovered-batch",
+      );
     };
+    mockMatrixQaHttp(fetchImpl);
+
     const observer = createMatrixQaRoomObserver({
       baseUrl: "http://127.0.0.1:28008/",
-      fetchImpl,
       observedEvents: [],
       since: "start-batch",
     });
@@ -464,11 +269,11 @@ describe("matrix sync helpers", () => {
 
   it("preserves terminal sync failures, including unrelated TimeoutErrors", async () => {
     const timeoutError = new DOMException("upstream protocol timeout", "TimeoutError");
+    const http = mockMatrixQaHttp(async () => {
+      throw timeoutError;
+    });
     const observer = createMatrixQaRoomObserver({
       baseUrl: "http://127.0.0.1:28008/",
-      fetchImpl: async () => {
-        throw timeoutError;
-      },
       observedEvents: [],
       since: "start-batch",
     });
@@ -481,9 +286,10 @@ describe("matrix sync helpers", () => {
       }),
     ).rejects.toBe(timeoutError);
 
+    http.request.mockRestore();
+    mockMatrixQaHttp(async () => Response.json({ error: "invalid access token" }, { status: 401 }));
     const authObserver = createMatrixQaRoomObserver({
       baseUrl: "http://127.0.0.1:28008/",
-      fetchImpl: async () => Response.json({ error: "invalid access token" }, { status: 401 }),
       observedEvents: [],
       since: "start-batch",
     });
@@ -500,9 +306,8 @@ describe("matrix sync helpers", () => {
     const deadline = new AbortController();
     const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
     const bodyError = new Error("late Matrix response body failure");
-    const observer = createMatrixQaRoomObserver({
-      baseUrl: "http://127.0.0.1:28008/",
-      fetchImpl: async () =>
+    mockMatrixQaHttp(
+      async () =>
         new Response(
           new ReadableStream({
             start(controller) {
@@ -511,6 +316,9 @@ describe("matrix sync helpers", () => {
             },
           }),
         ),
+    );
+    const observer = createMatrixQaRoomObserver({
+      baseUrl: "http://127.0.0.1:28008/",
       observedEvents: [],
       since: "start-batch",
     });

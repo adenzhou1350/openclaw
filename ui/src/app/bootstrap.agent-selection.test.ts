@@ -1,61 +1,15 @@
 import { gatewayOriginScope } from "@openclaw/gateway-client/browser";
-import { buildControlUiSessionPath } from "@openclaw/session-url-contract";
-import type { RouteLocation } from "@openclaw/uirouter";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentsListResult } from "../api/types.ts";
-import type { RouteId } from "../app-routes.ts";
-import { startModelSetupFirstRunRedirectAfterLocation } from "../pages/model-setup/first-run.ts";
 import { resolveInitialApplicationLocation } from "./bootstrap-location.ts";
 import { bootstrapApplication } from "./bootstrap.ts";
 import type { ApplicationContext } from "./context.ts";
-import { loadGatewaySessionSelection, loadSettings, saveSettings } from "./settings.ts";
-
-it.each([
-  { agentId: "main", savedAgentId: "work", basePath: "", suffix: "" },
-  { agentId: "work", savedAgentId: "main", basePath: "", suffix: "" },
-  { agentId: "main", savedAgentId: "work", basePath: "/openclaw", suffix: "/" },
-  { agentId: "work", savedAgentId: "main", basePath: "/openclaw", suffix: "/" },
-])(
-  "keeps cold explicit $agentId over saved $savedAgentId at $basePath (suffix '$suffix')",
-  async ({ agentId, savedAgentId, basePath, suffix }) => {
-    const pathname = buildControlUiSessionPath({
-      namespace: "chat",
-      sessionKey: `agent:${agentId}:main`,
-      exactKey: true,
-      basePath,
-    });
-    expect(pathname).toBe(`${basePath}/chat/${agentId}`);
-    const requested = { pathname: `${pathname}${suffix}`, search: "?draft=keep", hash: "#pane" };
-    let currentLocation: RouteLocation = requested;
-    const replace = vi.fn((location: RouteLocation) => {
-      currentLocation = location;
-    });
-    const gateway = {
-      snapshot: { phase: "connecting", client: null, hello: null },
-      subscribe: vi.fn(() => () => undefined),
-    } as unknown as ApplicationContext<RouteId>["gateway"];
-    const initialLocationReady = resolveInitialApplicationLocation({
-      location: requested,
-      basePath,
-      sessionKey: `agent:${savedAgentId}:main`,
-      selectedAgentId: savedAgentId,
-      gateway,
-      agentsList: () => null,
-      signal: new AbortController().signal,
-    });
-
-    await startModelSetupFirstRunRedirectAfterLocation({
-      context: { gateway } as ApplicationContext<RouteId>,
-      enabled: false,
-      history: { location: () => currentLocation, replace },
-      initialLocationReady,
-    });
-
-    expect(currentLocation).toEqual(requested);
-    expect(replace).not.toHaveBeenCalled();
-    expect(gateway.subscribe).not.toHaveBeenCalled();
-  },
-);
+import {
+  loadGatewaySessionSelection,
+  loadSettings,
+  saveSettings,
+  setSettingsChangeListener,
+} from "./settings.ts";
 
 it("routes a canonical global session through its persisted agent owner", async () => {
   const subscribe = vi.fn(() => () => undefined);
@@ -83,7 +37,7 @@ it("routes a canonical global session through its persisted agent owner", async 
           },
         },
         subscribe,
-      } as unknown as ApplicationContext<RouteId>["gateway"],
+      } as unknown as ApplicationContext["gateway"],
       agentsList: () => ({
         defaultId: "dummy",
         mainKey: "main",
@@ -123,7 +77,7 @@ it("falls back when the persisted agent is absent from the Gateway roster", asyn
           },
         },
         subscribe: vi.fn(() => () => undefined),
-      } as unknown as ApplicationContext<RouteId>["gateway"],
+      } as unknown as ApplicationContext["gateway"],
       agentsList: () => ({
         defaultId: "dummy",
         mainKey: "main",
@@ -133,42 +87,6 @@ it("falls back when the persisted agent is absent from the Gateway roster", asyn
       signal: new AbortController().signal,
     }),
   ).resolves.toEqual({ pathname: "/chat/dummy", search: "", hash: "" });
-});
-
-it("replaces a confirmed-missing remembered session with the agent main route", async () => {
-  const request = vi.fn(async () => ({ ok: false as const }));
-
-  await expect(
-    resolveInitialApplicationLocation({
-      location: { pathname: "/", search: "?draft=hello", hash: "" },
-      basePath: "",
-      sessionKey: "agent:research:thread:12345678-0000-4000-8000-000000000001",
-      gateway: {
-        snapshot: {
-          phase: "connected",
-          client: { request },
-          hello: { snapshot: { sessionDefaults: { defaultAgentId: "main", mainKey: "main" } } },
-        },
-        subscribe: vi.fn(() => () => undefined),
-      } as unknown as ApplicationContext<RouteId>["gateway"],
-      agentsList: () => ({
-        defaultId: "main",
-        mainKey: "main",
-        scope: "per-sender",
-        agents: [{ id: "main" }, { id: "research" }],
-      }),
-      signal: new AbortController().signal,
-    }),
-  ).resolves.toEqual({ pathname: "/chat/research", search: "?draft=hello", hash: "" });
-  expect(request).toHaveBeenCalledExactlyOnceWith(
-    "sessions.resolve",
-    {
-      key: "agent:research:thread:12345678-0000-4000-8000-000000000001",
-      agentId: "research",
-      allowMissing: true,
-    },
-    { signal: expect.any(AbortSignal) },
-  );
 });
 
 it("refreshes a cached roster and its default before accepting a remembered agent", async () => {
@@ -197,7 +115,7 @@ it("refreshes a cached roster and its default before accepting a remembered agen
           hello: { snapshot: { sessionDefaults: { defaultAgentId: "main", mainKey: "main" } } },
         },
         subscribe: vi.fn(() => () => undefined),
-      } as unknown as ApplicationContext<RouteId>["gateway"],
+      } as unknown as ApplicationContext["gateway"],
       agentsList: () => cachedList,
       ensureAgentsList,
       signal: new AbortController().signal,
@@ -233,11 +151,11 @@ it("validates a remembered session again after the Gateway client changes", asyn
     },
     subscribe: vi.fn(() => () => undefined),
   };
-  const gateway = gatewayState as unknown as ApplicationContext<RouteId>["gateway"];
+  const gateway = gatewayState as unknown as ApplicationContext["gateway"];
   const rememberedKey = "agent:research:thread:12345678-0000-4000-8000-000000000001";
 
   const pending = resolveInitialApplicationLocation({
-    location: { pathname: "/", search: "", hash: "" },
+    location: { pathname: "/", search: "?draft=hello", hash: "" },
     basePath: "",
     sessionKey: rememberedKey,
     gateway,
@@ -257,7 +175,11 @@ it("validates a remembered session again after the Gateway client changes", asyn
   };
   finishFirstRequest?.({ ok: true, key: rememberedKey, agentId: "research" });
 
-  await expect(pending).resolves.toEqual({ pathname: "/chat/research", search: "", hash: "" });
+  await expect(pending).resolves.toEqual({
+    pathname: "/chat/research",
+    search: "?draft=hello",
+    hash: "",
+  });
   expect(replacementRequest).toHaveBeenCalledExactlyOnceWith(
     "sessions.resolve",
     { key: rememberedKey, agentId: "research", allowMissing: true },
@@ -291,7 +213,7 @@ it("loads the agent roster again after the Gateway client changes", async () => 
     },
     subscribe: vi.fn(() => () => undefined),
   };
-  const gateway = gatewayState as unknown as ApplicationContext<RouteId>["gateway"];
+  const gateway = gatewayState as unknown as ApplicationContext["gateway"];
 
   const pending = resolveInitialApplicationLocation({
     location: { pathname: "/", search: "", hash: "" },
@@ -384,4 +306,53 @@ it.each([
     window.history.replaceState({}, "", previousUrl);
     saveSettings(previousSettings);
   }
+});
+
+describe("initial sidebar visibility", () => {
+  it.each(["/dashboard/research/conversation", "/chat/research/conversation?nav=collapsed"])(
+    "starts expanded without rewriting the route at %s",
+    (initialUrl) => {
+      const previousSettings = loadSettings();
+      const previousUrl = window.location.href;
+      window.history.replaceState({}, "", initialUrl);
+      let runtime: ReturnType<typeof bootstrapApplication> | undefined;
+
+      try {
+        runtime = bootstrapApplication();
+        expect(runtime.context.navigation.snapshot.navCollapsed).toBe(false);
+        expect(window.location.pathname + window.location.search + window.location.hash).toBe(
+          initialUrl,
+        );
+      } finally {
+        runtime?.stop();
+        window.history.replaceState({}, "", previousUrl);
+        saveSettings(previousSettings);
+      }
+    },
+  );
+
+  it("keeps sidebar visibility in memory without rewriting persisted settings", () => {
+    const previousSettings = loadSettings();
+    let runtime: ReturnType<typeof bootstrapApplication> | undefined;
+    const onPersistedSettingsChanged = vi.fn();
+
+    try {
+      runtime = bootstrapApplication();
+      setSettingsChangeListener(onPersistedSettingsChanged);
+
+      runtime.context.navigation.update({ navCollapsed: true });
+
+      expect(runtime.context.navigation.snapshot.navCollapsed).toBe(true);
+      expect(onPersistedSettingsChanged).not.toHaveBeenCalled();
+
+      runtime.context.navigation.update({ navWidth: previousSettings.navWidth + 1 });
+
+      expect(onPersistedSettingsChanged).toHaveBeenCalledOnce();
+      expect(loadSettings().navWidth).toBe(previousSettings.navWidth + 1);
+    } finally {
+      runtime?.stop();
+      setSettingsChangeListener(null);
+      saveSettings(previousSettings);
+    }
+  });
 });

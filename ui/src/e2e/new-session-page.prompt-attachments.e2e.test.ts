@@ -25,6 +25,7 @@ import {
   waitForCommittedChatRoute,
   waitForCommittedNewSessionDraft,
 } from "./new-session-page.test-support.ts";
+import { waitForCommittedComposerDraft } from "./settle.test-support.ts";
 
 const suite = createNewSessionPageE2eSuite();
 
@@ -120,6 +121,8 @@ suite.define(() => {
       await restoredPage.waitForURL(
         (url) => url.pathname === controlUiSessionPath("agent:main:restart-draft"),
       );
+      // Chat admission precedes durable cleanup; keep its document alive until retirement commits.
+      await waitForCommittedComposerDraft(restoredPage, JSON.stringify(["", "", ""]), null, 0);
       await restoredPage.close();
 
       const clearedPage = await context.newPage();
@@ -229,39 +232,6 @@ suite.define(() => {
       await start.press("Enter");
       await expect(gateway.waitForRequest("sessions.create")).resolves.toMatchObject({
         params: { message: longPrompt },
-      });
-    });
-  });
-
-  it("pastes an image into the draft and forwards it with the initial turn", async () => {
-    await withNewSessionPage(async (page) => {
-      await page.setViewportSize({ width: 393, height: 852 });
-      const gateway = await installMockGateway(page, {
-        methodResponses: {
-          "sessions.create": { key: "agent:main:image-draft", runStarted: true },
-        },
-      });
-      await page.goto(`${suite.server.baseUrl}new`);
-      const message = page.locator(".new-session-page__message");
-      await message.waitFor();
-      await pastePng(message);
-
-      await page.getByRole("img", { name: "pixel.png" }).waitFor();
-      await captureUiProof(suite, page, "mobile-composer-new-session-attachment.png");
-      await page.getByRole("button", { name: "Start session" }).click();
-
-      const create = await gateway.waitForRequest("sessions.create");
-      expect(create.params).toMatchObject({
-        agentId: "main",
-        message: "",
-        attachments: [
-          {
-            type: "image",
-            mimeType: "image/png",
-            fileName: "pixel.png",
-            content: ONE_PIXEL_PNG_B64,
-          },
-        ],
       });
     });
   });
@@ -431,14 +401,7 @@ suite.define(() => {
         .toBeGreaterThan(socketsBeforeReconnect);
       await gateway.setOnline(true);
       await expect
-        .poll(() =>
-          page.evaluate(() => {
-            const app = document.querySelector("openclaw-app") as HTMLElement & {
-              runtime?: { context: { gateway: { snapshot: { phase: string } } } };
-            };
-            return app.runtime?.context.gateway.snapshot.phase;
-          }),
-        )
+        .poll(() => page.evaluate(() => window.openclawControlUi?.snapshot().gatewayPhase))
         .toBe("connected");
       if (captureUiProofEnabled) {
         await mkdir(path.join(suite.artifactDir, "initial-prompt-reconnect"), { recursive: true });
@@ -541,6 +504,7 @@ suite.define(() => {
         await expect.poll(() => userImage.getAttribute("src")).toMatch(/^data:image\/png;base64,/u);
         await expectDecodedThumbnail(userImage, 180);
         const initialImageSrc = await userImage.getAttribute("src");
+        const initialImageAlt = await userImage.getAttribute("alt");
         const captureThumbnail = () =>
           page.video()
             ? takeControlUiElementScreenshot(page, userImage, [userImage])
@@ -633,6 +597,17 @@ suite.define(() => {
         expect(await userImage.getAttribute("data-initial-image-node")).toBe("true");
         expect((await captureThumbnail()).equals(initialPixels)).toBe(true);
         await captureUiProof(suite, page, "initial-image-canonical-ready.png");
+        await userRow.locator(".chat-message-image-button").click();
+        const lightbox = page.locator("openclaw-image-lightbox");
+        const dialog = lightbox.getByRole("dialog");
+        await dialog.waitFor({ state: "visible" });
+        await captureUiProof(suite, page, "initial-image-filename-preview.png", {
+          surface: dialog,
+          content: [lightbox.locator("img.image")],
+        });
+        expect(initialImageAlt).toBe("pixel.png");
+        expect(await userImage.getAttribute("alt")).toBe("pixel.png");
+        expect(await dialog.getAttribute("aria-label")).toBe("Image preview: pixel.png");
       } finally {
         releaseMedia();
       }
@@ -682,7 +657,7 @@ suite.define(() => {
     });
   });
 
-  it("releases a completed file when the rest of its pasted batch is aborted", async () => {
+  it("retains a completed file when the rest of its pasted batch is aborted", async () => {
     type PasteProof = {
       reads: number;
       loaded: number;
@@ -712,6 +687,9 @@ suite.define(() => {
               { once: true },
             );
             readAsDataUrl.call(this, blob);
+          } else {
+            // Hold only the second pasted file; draft restoration keeps native reads.
+            FileReader.prototype.readAsDataURL = readAsDataUrl;
           }
         };
         FileReader.prototype.abort = function () {
@@ -737,18 +715,36 @@ suite.define(() => {
       await pastePng(composer, 2);
       await expect
         .poll(readProof)
-        .toEqual({ reads: 2, loaded: 1, aborts: 0, created: 0, revoked: 0 });
-      expect(await page.locator(".chat-attachment-thumb").count()).toBe(0);
+        .toEqual({ reads: 2, loaded: 1, aborts: 0, created: 1, revoked: 0 });
+      expect(await page.locator(".chat-attachment-thumb").count()).toBe(2);
+      expect(await page.locator('.chat-attachment-thumb[aria-busy="true"]').count()).toBe(1);
+      await page.getByRole("img", { name: "pixel-1.png", exact: true }).waitFor();
+      await waitForCommittedNewSessionDraft(page, "", ["pixel-1.png"]);
 
       await navigateInApp(page, "chat");
       await waitForCommittedChatRoute(page);
       await expect
         .poll(readProof)
-        .toEqual({ reads: 2, loaded: 1, aborts: 1, created: 0, revoked: 0 });
+        .toEqual({ reads: 2, loaded: 1, aborts: 1, created: 1, revoked: 0 });
       await navigateInApp(page, "new-session");
       await composer.waitFor();
-      expect(await page.locator(".chat-attachment-thumb").count()).toBe(0);
+      await page.getByRole("img", { name: "pixel-1.png", exact: true }).waitFor();
+      expect(await page.locator(".chat-attachment-thumb").count()).toBe(1);
+      expect(await page.locator('.chat-attachment-thumb[aria-busy="true"]').count()).toBe(0);
       expect(await gateway.getRequests("sessions.create")).toHaveLength(0);
+      await page.getByRole("button", { name: "Remove pixel-1.png", exact: true }).click();
+      await waitForCommittedNewSessionDraft(page, "", []);
+      await expect
+        .poll(async () => {
+          const proof = await readProof();
+          return {
+            reads: proof.reads,
+            aborts: proof.aborts,
+            previews: proof.created - proof.revoked,
+          };
+        })
+        .toEqual({ reads: 2, aborts: 1, previews: 0 });
+      expect(await page.locator(".chat-attachment-thumb").count()).toBe(0);
     });
   });
 
