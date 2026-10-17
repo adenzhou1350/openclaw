@@ -28,16 +28,6 @@ vi.mock("openclaw/plugin-sdk/runtime-env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("openclaw/plugin-sdk/runtime-env")>()),
   danger: (value: string) => value,
 }));
-vi.mock("../proxy-request-client.js", () => ({
-  DISCORD_REST_TIMEOUT_MS: 15_000,
-  createDiscordRequestClient: vi.fn(() => ({
-    get: vi.fn(),
-    post: vi.fn(),
-    put: vi.fn(),
-    patch: vi.fn(),
-    delete: vi.fn(),
-  })),
-}));
 vi.mock("./auto-presence.js", () => ({ createDiscordAutoPresenceController: vi.fn() }));
 vi.mock("./gateway-plugin.js", () => ({
   createDiscordGatewayPlugin: vi.fn(),
@@ -68,7 +58,10 @@ vi.mock("./listeners.js", () => {
 });
 
 import { createRuntimeSpies } from "../../../test-support/runtime-spies.js";
-import { DISCORD_REST_TIMEOUT_MS } from "../proxy-request-client.js";
+import { DISCORD_REST_TIMEOUT_MS } from "../internal/rest.js";
+import { createDiscordAutoPresenceController } from "./auto-presence.js";
+import { createDiscordGatewayPlugin } from "./gateway-plugin.js";
+import { createDiscordGatewaySupervisor } from "./gateway-supervisor.js";
 import { registerDiscordListener } from "./listeners.js";
 import {
   createDiscordMonitorClient,
@@ -81,6 +74,20 @@ describe("Discord provider startup", () => {
     registerVoiceClientSpy.mockReset();
     waitForRegistration.mockReset().mockReturnValue(undefined);
     vi.mocked(registerDiscordListener).mockClear();
+    vi.mocked(createDiscordGatewayPlugin)
+      .mockReset()
+      .mockReturnValue({ id: "gateway" } as never);
+    vi.mocked(createDiscordGatewaySupervisor)
+      .mockReset()
+      .mockReturnValue({ shutdown: vi.fn(), handleError: vi.fn() } as never);
+    vi.mocked(createDiscordAutoPresenceController)
+      .mockReset()
+      .mockReturnValue({
+        enabled: false,
+        start: vi.fn(),
+        stop: vi.fn(),
+        refresh: vi.fn(),
+      } as never);
   });
 
   function createMonitorClient(
@@ -97,16 +104,6 @@ describe("Discord provider startup", () => {
       voiceEnabled: false,
       discordConfig: {},
       runtime: createRuntimeSpies(),
-      createClient: (options, handlers, plugins) => new Client(options, handlers, plugins),
-      createGatewayPlugin: () => ({ id: "gateway" }) as never,
-      createGatewaySupervisor: () => ({ shutdown: vi.fn(), handleError: vi.fn() }) as never,
-      createAutoPresenceController: () =>
-        ({
-          enabled: false,
-          start: vi.fn(),
-          stop: vi.fn(),
-          refresh: vi.fn(),
-        }) as never,
       isDisallowedIntentsError: () => false,
       ...overrides,
     });
@@ -117,20 +114,17 @@ describe("Discord provider startup", () => {
     const registration = createDeferred<void>();
     waitForRegistration.mockReturnValue(registration.promise);
     const gatewaySupervisor = { shutdown: vi.fn(), handleError: vi.fn() };
-    const createGatewaySupervisor = vi.fn(() => gatewaySupervisor);
-    const pending = createMonitorClient({
-      voiceEnabled: true,
-      createGatewayPlugin: () => gatewayPlugin as never,
-      createGatewaySupervisor: createGatewaySupervisor as never,
-    });
+    vi.mocked(createDiscordGatewayPlugin).mockReturnValue(gatewayPlugin as never);
+    vi.mocked(createDiscordGatewaySupervisor).mockReturnValue(gatewaySupervisor as never);
+    const pending = createMonitorClient({ voiceEnabled: true });
     await Promise.resolve();
     expect(waitForRegistration).toHaveBeenCalledWith(gatewayPlugin);
-    expect(createGatewaySupervisor).not.toHaveBeenCalled();
+    expect(createDiscordGatewaySupervisor).not.toHaveBeenCalled();
     registration.resolve();
     const result = await pending;
     expect(registerVoiceClientSpy).toHaveBeenCalledOnce();
     expect(registerVoiceClientSpy).toHaveBeenCalledWith(result.client);
-    expect(createGatewaySupervisor).toHaveBeenCalledOnce();
+    expect(createDiscordGatewaySupervisor).toHaveBeenCalledOnce();
     expect(result.gatewaySupervisor).toBe(gatewaySupervisor);
   });
 
@@ -188,20 +182,14 @@ describe("Discord provider startup", () => {
     const fetchUser = vi.fn(async () => {
       throw new Error("network should not be used");
     });
-    const logStartupPhase = vi.fn();
     const botId = "1477179610322964541";
     await expect(
       fetchDiscordBotIdentity({
         client: { fetchUser } as never,
         token: `${Buffer.from(botId).toString("base64")}.GhIiP9.vU1xEpJ6NjFm`,
         runtime: createRuntimeSpies(),
-        logStartupPhase,
       }),
     ).resolves.toEqual({ botUserId: botId, botUserName: undefined });
     expect(fetchUser).not.toHaveBeenCalled();
-    expect(logStartupPhase).toHaveBeenCalledWith(
-      "fetch-bot-identity:done",
-      `botUserId=${botId} botUserName=<missing> source=token`,
-    );
   });
 });

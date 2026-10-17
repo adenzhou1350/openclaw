@@ -1,8 +1,8 @@
-import type { DatabaseSync } from "node:sqlite";
 import type {
   CommittedCompactionAppend,
   PreparedCompactionAppend,
 } from "../../agents/sessions/session-compaction-persistence.js";
+import type { EngineConnection } from "../../infra/sql-connection.js";
 import {
   resolveOpenClawAgentSqlitePath,
   runOpenClawAgentWriteTransaction,
@@ -11,19 +11,13 @@ import { readSessionEntryRow, writeSessionEntry } from "./session-accessor.sqlit
 import {
   ensureSessionEntryInTransaction,
   ensureSessionEntrySync,
-  type InitialSessionEntryCommit,
 } from "./session-accessor.sqlite-initial-entry.js";
-import { readTranscriptEventRows } from "./session-accessor.sqlite-read.js";
 import {
   resolveSqliteTranscriptScope,
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
 import { requireTranscriptEventAppendSnapshot } from "./session-accessor.sqlite-transcript-append-result.js";
 import { resolveTranscriptMessageAppendParent } from "./session-accessor.sqlite-transcript-parent.js";
-import {
-  readNextTranscriptSeq,
-  readTranscriptContextVersionInTransaction,
-} from "./session-accessor.sqlite-transcript-state.js";
 import {
   assertLockedTranscriptWriteAllowed,
   resolveTranscriptAppendRefusal,
@@ -34,6 +28,10 @@ import type {
   SessionTranscriptWriteScope,
 } from "./session-accessor.types.js";
 import { projectCompactionAccountingPatch } from "./session-entry-projection.js";
+import type {
+  CompactionBoundaryOperations,
+  InitialSessionEntryCommit,
+} from "./session-manager-write-contract.js";
 import { projectCanonicalSessionEntryShape } from "./store-entry-shape.js";
 import {
   assertOwnedTranscriptWriteCommit,
@@ -53,26 +51,8 @@ type CompactionParams = {
   transcriptByteCompactionLatch: NonNullable<InternalSessionEntry["transcriptByteCompactionLatch"]>;
 };
 
-export type CompactionBoundaryOperations = {
-  "session.transcript.compactionBoundary": {
-    input: {
-      scope: Omit<CompactionScope, "env">;
-      prepared: Omit<PreparedCompactionAppend, "scope"> & {
-        scope: Omit<CompactionScope, "env">;
-      };
-      transcriptByteCompactionLatch: CompactionParams["transcriptByteCompactionLatch"];
-      initialWriterRunId?: string;
-    };
-    output: {
-      committed: CommittedCompactionAppend;
-      initialEntry?: InitialSessionEntryCommit;
-      projectionNeedsReconcile: boolean;
-    };
-  };
-};
-
 type CompactionWorkerContext = {
-  database: DatabaseSync;
+  database: EngineConnection;
   admit(stage: "transaction" | "commit"): void;
 };
 
@@ -149,7 +129,6 @@ function persistCompactionBoundary(
           appendIntent: params.prepared.appendIntent,
         }),
       };
-      const firstAppendedSeq = readNextTranscriptSeq(database, resolved.sessionId);
       let projectionNeedsReconcile = false;
       const appended = appendTranscriptEventSnapshotSync(
         preparedScope,
@@ -168,16 +147,6 @@ function persistCompactionBoundary(
         appended,
         `Session transcript entry was not persisted: ${event.id}`,
       );
-      const appendedRows = readTranscriptEventRows(database, resolved.sessionId, {
-        afterSeq: firstAppendedSeq - 1,
-      });
-      if (
-        event.type !== "compaction" ||
-        appendedRows.length !== 1 ||
-        appendedRows[0]?.eventJson !== JSON.stringify(event)
-      ) {
-        throw new Error("Compaction boundary validation failed");
-      }
       assertOwnedTranscriptWriteCommit(fencedScope);
       assertOwnedTranscriptWriteCommit(preparedScope);
       const fresh = readSessionEntryRow(database, resolved.sessionKey)?.entry;
@@ -201,7 +170,7 @@ function persistCompactionBoundary(
         committed: {
           result: event,
           before: committed.before,
-          after: readTranscriptContextVersionInTransaction(database, resolved.sessionId),
+          after: committed.after,
         },
         initialEntry,
         projectionNeedsReconcile,

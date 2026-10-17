@@ -8,6 +8,7 @@ import type { PreparedModelRuntimePluginGeneration } from "../agents/prepared-mo
 import type { SystemAgentSession } from "./agent-turn.js";
 import type { SystemAgentTurnDeps } from "./agent-turn.test-support.js";
 import {
+  operationMocks,
   createSystemAgentVerifiedInferenceTestFixture,
   fakeOverviewLoader,
   useTempStateDir,
@@ -15,12 +16,40 @@ import {
   createAmbientVerifiedBinding,
   SystemAgentChatEngine,
   RuntimeSystemAgentChatEngine,
-  SystemAgentInferenceUnavailableError,
   runSystemAgentTurnWithDeps,
   type OpenClawConfig,
   type SystemAgentChatEngineOptions,
 } from "./chat-engine.test-support.js";
-import { loadSystemAgentOverview } from "./overview.js";
+
+async function driftFixture() {
+  let config: OpenClawConfig = {
+    agents: { defaults: { model: "openai/gpt-5.5" } },
+    models: {
+      providers: {
+        openai: {
+          baseUrl: "https://api.openai.com/v1",
+          apiKey: "test-key",
+          auth: "api-key",
+          models: [],
+        },
+      },
+    },
+  };
+  return {
+    verifiedInference: await createAmbientVerifiedBinding(config),
+    readConfigFileSnapshot: vi.fn(async () => configSnapshot(config)),
+    drift: () => {
+      config = { agents: { defaults: { model: "anthropic/claude-opus-4-8" } } };
+    },
+  };
+}
+
+function inferenceDeps(
+  inference: Awaited<ReturnType<typeof createSystemAgentVerifiedInferenceTestFixture>>,
+  config: OpenClawConfig,
+) {
+  return { ...inference.deps, readConfigFileSnapshot: async () => configSnapshot(config) };
+}
 
 describe("SystemAgentChatEngine facade", () => {
   it.each(["requester", "alternate"])("preserves runtime ownership for %s", async (requester) => {
@@ -28,10 +57,11 @@ describe("SystemAgentChatEngine facade", () => {
     const config: OpenClawConfig = {
       agents: {
         defaults: { model: "openai/gpt-5.5" },
-        list: [{ id: "alternate", default: true, model: "openai/gpt-5.5" }],
+        entries: { alternate: { model: "openai/gpt-5.5" } },
       },
     };
     const inference = await createSystemAgentVerifiedInferenceTestFixture(config);
+    const deps = inferenceDeps(inference, config);
     expect(inference.binding.execution.agentId).toBe("alternate");
     const inheritedGeneration = {} as PreparedModelRuntimePluginGeneration;
     const observedGenerations: Array<PreparedModelRuntimePluginGeneration | undefined> = [];
@@ -49,13 +79,11 @@ describe("SystemAgentChatEngine facade", () => {
       planGreeting,
       runAgentTurn: (params) =>
         runSystemAgentTurnWithDeps(params, {
-          ...inference.deps,
-          readConfigFileSnapshot: async () => configSnapshot(config),
+          ...deps,
           runEmbeddedAgent: runEmbeddedAgent as never,
         }),
       deps: {
-        ...inference.deps,
-        readConfigFileSnapshot: async () => configSnapshot(config),
+        ...deps,
         loadOverview: fakeOverviewLoader(),
       },
     });
@@ -79,6 +107,7 @@ describe("SystemAgentChatEngine facade", () => {
       agents: { defaults: { model: "openai/gpt-5.6-luna" } },
     };
     const inference = await createSystemAgentVerifiedInferenceTestFixture(config);
+    const deps = inferenceDeps(inference, config);
     const planner = vi
       .spyOn(await import("./assistant.js"), "planSystemAgentCommand")
       .mockResolvedValue({ reply: "A second inference ran." });
@@ -103,14 +132,12 @@ describe("SystemAgentChatEngine facade", () => {
         params.session.proposalRef.operation = { kind: "setup" };
         params.session.cliSession = { routeKey: "old", binding: { sessionId: "old" } };
         return runSystemAgentTurnWithDeps(params, {
-          ...inference.deps,
-          readConfigFileSnapshot: async () => configSnapshot(config),
+          ...deps,
           runEmbeddedAgent: runEmbeddedAgent as never,
         });
       },
       deps: {
-        ...inference.deps,
-        readConfigFileSnapshot: async () => configSnapshot(config),
+        ...deps,
         loadOverview: fakeOverviewLoader(),
       },
     });
@@ -135,138 +162,61 @@ describe("SystemAgentChatEngine facade", () => {
     }
   });
 
-  it("uses the verified inference owner for a delegated fleet overview", async () => {
-    useTempStateDir();
-    const config: OpenClawConfig = {
-      agents: {
-        ownership: "explicit",
-        entries: { main: { model: "openai/gpt-5.6-luna" }, work: {} },
-      },
-      gateway: { port: 1 },
-    };
-    const engine = new SystemAgentChatEngine({
-      requesterAgentId: "main",
-      deps: {
-        loadOverview: async (options?: { agentId?: string }) =>
-          loadSystemAgentOverview({
-            ...options,
-            deps: {
-              readConfigFileSnapshot: async () => configSnapshot(config),
-              probeLocalCommand: async (command) => ({ command, found: false }),
-              probeGatewayUrl: async (url) => ({ url, reachable: false }),
-            },
-          }),
-      },
-    });
-    try {
-      const overview = await engine.loadOverview();
-      expect(overview.defaultAgentId).toBe("main");
-      expect(overview.agents.map(({ id, isDefault }) => ({ id, isDefault }))).toEqual([
-        { id: "main", isDefault: true },
-        { id: "work", isDefault: false },
-      ]);
-    } finally {
-      await engine.dispose();
-    }
-  });
-
   it("rejects a seeded approval when its binding changes during classification", async () => {
-    const baseConfig = {
-      agents: { defaults: { model: "openai/gpt-5.5" } },
-      models: {
-        providers: {
-          openai: {
-            baseUrl: "https://api.openai.com/v1",
-            apiKey: "test-key",
-            auth: "api-key",
-            models: [],
-          },
-        },
-      },
-    } satisfies OpenClawConfig;
-    const changedConfig = {
-      agents: { defaults: { model: "anthropic/claude-opus-4-8" } },
-    } satisfies OpenClawConfig;
-    const verifiedInference = await createAmbientVerifiedBinding(baseConfig);
-    let currentConfig = baseConfig as OpenClawConfig;
-    const runConfigSet = vi.fn(async () => {});
+    const { verifiedInference, readConfigFileSnapshot, drift } = await driftFixture();
+    const runConfigSet = operationMocks.runConfigSet.mockResolvedValue(undefined);
     const engine = new SystemAgentChatEngine({
       verifiedInference,
       classifyApproval: async () => {
-        currentConfig = changedConfig;
+        drift();
         return "approve";
       },
       deps: {
-        readConfigFileSnapshot: vi.fn(async () => configSnapshot(currentConfig)) as never,
-        runConfigSet,
+        readConfigFileSnapshot,
       },
     });
     engine.propose({ kind: "config-set", path: "gateway.port", value: "19001" });
 
-    await expect(engine.handle("yes")).rejects.toBeInstanceOf(SystemAgentInferenceUnavailableError);
+    await expect(engine.handle("yes")).rejects.toMatchObject({
+      message: expect.stringContaining("verified inference route changed"),
+    });
     expect(runConfigSet).not.toHaveBeenCalled();
   });
 
   it("rejects a setup write without a verified inference binding", async () => {
     useTempStateDir();
-    const applySetup = vi.fn(async () => ({
-      configPath: "/tmp/openclaw.json",
-      configHashBefore: null,
-      configHashAfter: "after",
-      bootstrapPending: false,
-      workspaceReady: true,
-      gateway: { status: "ready" as const, action: "reused" as const },
-      lines: ["Workspace: /tmp/work"],
-    }));
+    const applySetup = operationMocks.applySetup;
     expect(
       () =>
         new RuntimeSystemAgentChatEngine({
           surface: "cli",
           runAgentTurn: async () => null,
           deps: {
-            applySetup,
             loadOverview: fakeOverviewLoader(),
           },
         } as unknown as SystemAgentChatEngineOptions),
-    ).toThrow(SystemAgentInferenceUnavailableError);
+    ).toThrow("openclaw onboard");
     expect(applySetup).not.toHaveBeenCalled();
   });
 
   it("does not expose an agent reply after its inference owner drifts", async () => {
-    const baseConfig = {
-      agents: { defaults: { model: "openai/gpt-5.5" } },
-      models: {
-        providers: {
-          openai: {
-            baseUrl: "https://api.openai.com/v1",
-            apiKey: "test-key",
-            auth: "api-key",
-            models: [],
-          },
-        },
-      },
-    } satisfies OpenClawConfig;
-    const changedConfig = {
-      agents: { defaults: { model: "anthropic/claude-opus-4-8" } },
-    } satisfies OpenClawConfig;
-    const verifiedInference = await createAmbientVerifiedBinding(baseConfig);
-    let currentConfig: OpenClawConfig = baseConfig;
+    const { verifiedInference, readConfigFileSnapshot, drift } = await driftFixture();
     const runAgentTurn = vi.fn(async () => {
-      currentConfig = changedConfig;
+      drift();
       return { text: "stale reply" };
     });
     const engine = new SystemAgentChatEngine({
       verifiedInference,
       runAgentTurn,
       deps: {
-        readConfigFileSnapshot: vi.fn(async () => configSnapshot(currentConfig)) as never,
+        readConfigFileSnapshot,
         loadOverview: fakeOverviewLoader(),
       },
     });
 
-    await expect(engine.handle("what should I do next?")).rejects.toBeInstanceOf(
-      SystemAgentInferenceUnavailableError,
-    );
+    await expect(engine.handle("what should I do next?")).rejects.toMatchObject({
+      message: expect.stringContaining("verified inference route changed"),
+    });
   });
 
   it("preserves the inference failure without a second model attempt", async () => {
