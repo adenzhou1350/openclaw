@@ -1,8 +1,14 @@
 import { expect, it, vi } from "vitest";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { tableHasColumn } from "../../state/openclaw-state-db-schema-helpers.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
+import * as profileAuthority from "../../state/user-channel-identity-operations.js";
 import { prepareUserProfileCatalog } from "../../state/user-profile-list.js";
+import {
+  mergeCanonicalUserProfiles,
+  setCanonicalUserProfileRole,
+} from "../../state/user-profile-writes.js";
 import {
   linkEmail,
   setAvatar,
@@ -20,6 +26,116 @@ import {
 } from "../server-plugin-in-process-dispatch.test-support.js";
 import type { RespondFn } from "./response-types.js";
 import { usersHandlers } from "./users.js";
+
+it("returns only the authenticated person's private emails from the shared users.self catalog", async () => {
+  const state = await createOpenClawTestState({
+    layout: "state-only",
+    prefix: "users-self-private-",
+  });
+  let catalog: Awaited<ReturnType<typeof prepareUserProfileCatalog>> | undefined;
+  try {
+    const people = ["alpha-private@example.test", "bravo-private@example.test"].map((email) => ({
+      email,
+      profile: ensureProfileForEmail(email),
+    }));
+    catalog = await prepareUserProfileCatalog();
+    const context = createContext();
+    for (const { email, profile } of people) {
+      for (const scopes of [["operator.read"], []]) {
+        const respond = vi.fn<RespondFn>();
+        await handleGatewayRequest({
+          req: { type: "req", id: profile.id, method: "users.self", params: {} },
+          respond,
+          context,
+          client: createOperatorClient({ profileId: profile.id, scopes }),
+          isWebchatConnect: () => false,
+          extraHandlers: usersHandlers,
+        });
+        expect(respond.mock.calls).toEqual([
+          scopes.length
+            ? [
+                true,
+                {
+                  profile: {
+                    ...profile,
+                    emails: [email],
+                    githubIdentity: null,
+                    hasAvatar: false,
+                  },
+                },
+              ]
+            : [false, undefined, expect.objectContaining({ code: "FORBIDDEN" })],
+        ]);
+      }
+    }
+  } finally {
+    catalog?.release();
+    await state.cleanup();
+  }
+});
+
+it.each(["role", "identity"] as const)(
+  "rejects users.self when a committed %s change revokes its prepared profile before response",
+  async (change) => {
+    const state = await createOpenClawTestState({
+      layout: "state-only",
+      prefix: "users-self-revoke-",
+    });
+    let catalog: Awaited<ReturnType<typeof prepareUserProfileCatalog>> | undefined;
+    const resume = createDeferredCore();
+    try {
+      const person = ensureProfileForEmail("original-private@example.test");
+      const replacement = ensureProfileForEmail("replacement-private@example.test");
+      catalog = await prepareUserProfileCatalog();
+      const prepared = createDeferredCore();
+      const prepare = profileAuthority.prepareUserProfileRoleAuthority;
+      using preparation = vi.spyOn(profileAuthority, "prepareUserProfileRoleAuthority");
+      preparation.mockImplementation(async (profileId, options) => {
+        const authority = await prepare(profileId, options);
+        if (options?.includeProfile) {
+          prepared.resolve();
+          await resume.promise;
+        }
+        return authority;
+      });
+      const respond = vi.fn<RespondFn>();
+      const request = handleGatewayRequest({
+        req: { type: "req", id: change, method: "users.self", params: {} },
+        respond,
+        context: createContext(),
+        client: createOperatorClient({ profileId: person.id, scopes: ["operator.read"] }),
+        isWebchatConnect: () => false,
+        extraHandlers: usersHandlers,
+      });
+      try {
+        await Promise.race([prepared.promise, request]);
+        expect(respond).not.toHaveBeenCalled();
+        if (change === "role") {
+          await setCanonicalUserProfileRole(person.id, "reader");
+        } else {
+          await mergeCanonicalUserProfiles(person.id, replacement.id);
+        }
+      } finally {
+        resume.resolve();
+        await request;
+      }
+      expect(respond.mock.calls).toEqual([
+        [
+          false,
+          undefined,
+          expect.objectContaining({
+            code: "UNAVAILABLE",
+            message: "Gateway requester profile changed",
+          }),
+        ],
+      ]);
+    } finally {
+      resume.resolve();
+      catalog?.release();
+      await state.cleanup();
+    }
+  },
+);
 
 it("commits profile display and avatar edits through their Gateway handlers without host SQL", async () => {
   const state = await createOpenClawTestState({ layout: "state-only", prefix: "users-setters-" });
@@ -105,6 +221,7 @@ it("enforces scoped, bounded users.list dispatch without filtering profiles or r
           avatarUrl: "https://avatars.githubusercontent.com/u/101?v=4",
         },
         hasAvatar: true,
+        roleSource: "default",
       },
       {
         id: retired.id,
@@ -116,6 +233,7 @@ it("enforces scoped, bounded users.list dispatch without filtering profiles or r
         emails: [],
         githubIdentity: null,
         hasAvatar: false,
+        roleSource: "default",
       },
       {
         id: grace.id,
@@ -128,6 +246,7 @@ it("enforces scoped, bounded users.list dispatch without filtering profiles or r
         githubIdentity: null,
         hasAvatar: false,
         role: "reader",
+        roleSource: "default",
       },
     ];
     const selected = {
@@ -264,7 +383,7 @@ it("observes native first-use role assignment after warming a legacy worker read
           req: {} as never,
           params: {},
           respond,
-          context: {} as never,
+          context: createContext(),
           client: null,
           isWebchatConnect: () => false,
         });
@@ -284,11 +403,14 @@ it("observes native first-use role assignment after warming a legacy worker read
       emails: ["legacy@example.test"],
       githubIdentity: null,
       hasAvatar: false,
+      roleSource: "default",
     });
     expect(tableHasColumn(db, "user_profiles", "role")).toBe(false);
 
     setUserProfileRole(profile.id, "maintainer");
-    await read(expect.objectContaining({ id: profile.id, role: "maintainer" }));
+    await read(
+      expect.objectContaining({ id: profile.id, role: "maintainer", roleSource: "default" }),
+    );
     expect(db.prepare("PRAGMA user_version").get()?.user_version).toBe(version);
   } finally {
     await state.cleanup();

@@ -61,10 +61,30 @@
       "class": "plugin-runtime",
       "risk": ["mdns", "network"]
     },
+    "@modelcontextprotocol/client": {
+      "owner": "core:mcp",
+      "class": "core-runtime",
+      "risk": ["protocol-client", "network"]
+    },
+    "@modelcontextprotocol/core": {
+      "owner": "core:mcp",
+      "class": "core-runtime",
+      "risk": ["schema-validation"]
+    },
+    "@modelcontextprotocol/node": {
+      "owner": "core:mcp",
+      "class": "core-runtime",
+      "risk": ["protocol-server", "network"]
+    },
     "@modelcontextprotocol/sdk": {
       "owner": "core:mcp",
       "class": "core-runtime",
       "risk": ["protocol-client", "network"]
+    },
+    "@modelcontextprotocol/server": {
+      "owner": "core:mcp",
+      "class": "core-runtime",
+      "risk": ["protocol-server", "network"]
     },
     "@mozilla/readability": {
       "owner": "plugin:web-readability",
@@ -85,7 +105,12 @@
     "@openclaw/fs-safe": {
       "owner": "core:filesystem-safety",
       "class": "core-runtime",
-      "risk": ["filesystem", "path-safety"]
+      "risk": ["native", "filesystem", "path-safety", "secret-input"]
+    },
+    "@openclaw/proc-safe": {
+      "owner": "core:process-execution",
+      "class": "core-runtime",
+      "risk": ["native", "process-execution", "service-manager"]
     },
     "@silvia-odwyer/photon-node": {
       "owner": "core:media",
@@ -208,11 +233,6 @@
       "owner": "core:archive-handling",
       "class": "core-runtime",
       "risk": ["archive-parser", "untrusted-files"]
-    },
-    "koffi": {
-      "owner": "core:process-execution",
-      "class": "core-runtime",
-      "risk": ["native", "ffi", "process-execution", "secret-input"]
     },
     "kysely": {
       "owner": "core:sqlite-storage",
