@@ -1,4 +1,5 @@
 import path from "node:path";
+import { isStringArray } from "@openclaw/normalization-core/record-coerce";
 import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
 import { resolveStateDir } from "../config/state-dir.js";
 import { formatErrorMessage } from "../infra/errors.js";
@@ -9,7 +10,7 @@ import {
 } from "../infra/kysely-sync.js";
 import type { EngineConnection } from "../infra/sql-connection.js";
 import { isSqliteCorruptionError } from "../infra/sqlite-error-diagnostics.js";
-import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
+import { runSqliteReadSnapshotSync } from "../infra/sqlite-transaction.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { isSessionStoreTopologyChange, sessionChanges } from "../sessions/session-row-changes.js";
 import { hasClawDeletionOwnership } from "./agent-deletion-journal-authority.worker.js";
@@ -107,10 +108,7 @@ export async function readAgentDeletionJournalStatusInWorker(
 
 export function parseAgentDeletionDatabasePaths(value: string): string[] {
   const parsed: unknown = JSON.parse(value);
-  if (
-    Array.isArray(parsed) &&
-    parsed.every((entry): entry is string => typeof entry === "string")
-  ) {
+  if (isStringArray(parsed)) {
     return parsed;
   }
   throw new Error("Invalid agent deletion database path journal.");
@@ -200,7 +198,7 @@ export function readAgentDatabaseDeletionSnapshot(
 ): AgentDatabaseDeletionSnapshot | undefined {
   return withExistingOpenClawStateDatabaseReadOnly(
     ({ db, path: statePath }) =>
-      runSqliteDeferredTransactionSync(
+      runSqliteReadSnapshotSync(
         db,
         () => ({
           retainedDeletions: readRetainedAgentDeletionsFromDatabase(db, statePath, purpose),

@@ -90,6 +90,7 @@ import { SessionOwnerFilter } from "./session-owner-filter.ts";
 import { SidebarEmptyGroupsPreference } from "./sidebar-empty-groups.ts";
 import type { SidebarMenus } from "./sidebar-menus.tsx";
 import type { SidebarNavigationCatalog } from "./sidebar-navigation-catalog.ts";
+import { SidebarProjectionMemo, SidebarSessionRowProjection } from "./sidebar-projection-cache.ts";
 import {
   memoizedSidebarCatalogs,
   memoizedSidebarHome,
@@ -98,11 +99,25 @@ import {
   sidebarNavigationInputs,
   sidebarRowsInputs,
   type SidebarProjectionHost,
-  SidebarProjectionMemo,
 } from "./sidebar-projection-memo.ts";
 import { restoreSnapshotSections, restoreSnapshotSession } from "./sidebar-snapshot-model.ts";
+import { mountedViewerSessionKeys } from "./solid/viewer-facepile.tsx";
 
 export abstract class AppSidebarSessionNavigationElement extends AppSidebarBase {
+  readonly personCardTriggers = new WeakMap<HTMLElement, HTMLElement>();
+  readonly presencePeople = new Map<string, HTMLElement>();
+
+  mountedPresence() {
+    return {
+      sessionKeys: mountedViewerSessionKeys(this.hostElement),
+      activityProfileIds: new Set(
+        [...this.presencePeople.values()]
+          .filter((element) => this.hostElement.contains(element))
+          .map((element) => element.dataset.personCardKey?.slice("profile:".length) ?? ""),
+      ),
+    };
+  }
+
   shouldPublishSessionData(): boolean {
     return this.sessionProjection.shouldPublishSessionData(this, {
       snapshot: Boolean(this.sidebarSnapshot),
@@ -153,9 +168,9 @@ export abstract class AppSidebarSessionNavigationElement extends AppSidebarBase 
   private readonly homeMemos = new Map<string, SidebarProjectionMemo<SidebarHomeSession>>();
   readonly sessionOwnerFilter = new SessionOwnerFilter(
     () => this.context?.gateway,
-    () => this.requestUpdate(),
+    () => this.invalidate(),
   );
-  readonly sessionData = new SessionDataOwner(this, () => this.requestUpdate());
+  readonly sessionData = new SessionDataOwner(this, () => this.invalidate());
 
   samePresence(previous: PresencePayload | undefined, next: PresencePayload | undefined): boolean {
     return this.sessionProjection.samePresence(previous, next, sidebarPresenceScope(this));
@@ -214,7 +229,7 @@ export abstract class AppSidebarSessionNavigationElement extends AppSidebarBase 
 
   setSessionSortMode(mode: SidebarSessionSortMode) {
     this.sessionSortMode = storeSidebarSessionSortMode(mode, this.sessionPeopleSortCapability());
-    this.requestUpdate();
+    this.invalidate();
   }
 
   sidebarSessionOwnerFilter() {
@@ -239,7 +254,7 @@ export abstract class AppSidebarSessionNavigationElement extends AppSidebarBase 
 
   private readonly sessionSelection = createSidebarSessionSelection(
     () => this.visibleSessionRowsInOrder(),
-    () => this.requestUpdate(),
+    () => this.invalidate(),
   );
   get selectedSessionKeys(): ReadonlySet<string> {
     return this.sessionSelection.selectedKeys;
@@ -257,7 +272,7 @@ export abstract class AppSidebarSessionNavigationElement extends AppSidebarBase 
 
   setSessionsEmptyGroupsMode(mode: SidebarEmptyGroupsMode): void {
     this.emptyGroups.set(mode);
-    this.requestUpdate();
+    this.invalidate();
   }
   sessionsStatusFilter: SidebarSessionStatusFilter = loadStoredSidebarSessionStatusFilter();
   hiddenSessionCatalogIds: ReadonlySet<string> = loadStoredHiddenSessionCatalogIds();
@@ -281,7 +296,7 @@ export abstract class AppSidebarSessionNavigationElement extends AppSidebarBase 
       .map((catalog) => catalog.id);
   };
 
-  private readonly runtimeSampledAtByRow = new WeakMap<GatewaySessionRow, number>();
+  private readonly rowProjection = new SidebarSessionRowProjection();
   readonly attentionQuestions = createQuestionPromptState(() => {});
   declare attention: SessionAttention;
 
@@ -305,7 +320,7 @@ export abstract class AppSidebarSessionNavigationElement extends AppSidebarBase 
 
   promoteCreatedSession(sessionKey: string) {
     if (this.sessionProjection.promoteCreatedSession(sessionKey)) {
-      this.requestUpdate();
+      this.invalidate();
     }
   }
 
@@ -365,7 +380,7 @@ export abstract class AppSidebarSessionNavigationElement extends AppSidebarBase 
         projectSidebarNavigation(
           this,
           createSidebarSessionRowsComparator(this.readSidebarSessionSortOptions),
-          this.runtimeSampledAtByRow,
+          this.rowProjection,
           (row) => this.attention.resolveSessionAgentStatus(row)?.note,
         ),
     );
@@ -700,7 +715,7 @@ export abstract class AppSidebarSessionNavigationElement extends AppSidebarBase 
   }
 
   get resolveSessionAttention() {
-    return this.attention.resolve();
+    return this.attention.readResolver();
   }
 
   projectHomeSession(row: GatewaySessionRow, agentId: string): SidebarHomeSession {
@@ -756,12 +771,12 @@ export abstract class AppSidebarSessionNavigationElement extends AppSidebarBase 
         this.sessionData.discardEmptyChildSessionSnapshot(key);
       }
     }
-    this.requestUpdate();
+    this.invalidate();
   }
 
   showMoreChildren(sessionKey: string) {
     this.sessionProjection.children.showMore(sessionKey);
-    this.requestUpdate();
+    this.invalidate();
   }
 
   agentUnreadCount(agentId: string): number {

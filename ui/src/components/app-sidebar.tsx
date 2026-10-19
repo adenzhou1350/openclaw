@@ -9,8 +9,8 @@ import {
   onSettled,
   runWithOwner,
   Show,
-  untrack,
 } from "solid-js";
+import { rosterActivityStore } from "../lib/agents/roster-activity-store.ts";
 import { useApplication, useOptionalApplication } from "../lib/reactive/context.ts";
 import { listen } from "../lib/reactive/listener.ts";
 import { createParkedProjection } from "../lib/reactive/parked-projection.ts";
@@ -59,14 +59,17 @@ function disconnectSidebarOwner(host: HTMLElement): void {
   }
 }
 
-function AppSidebarContent(props: AppSidebarProps, host: HTMLElement): JSX.Element {
+function AppSidebarContent(
+  props: AppSidebarProps,
+  host: HTMLElement & AppSidebarProps,
+): JSX.Element {
   host.style.display = "contents";
   const context = useApplication();
   const catalog = createSidebarNavigationCatalog(context, () => props.navigationView, host);
-  const owner = sidebarOwners.get(host) ?? new AppSidebarOwner(catalog, props, context, host);
+  const owner = sidebarOwners.get(host) ?? new AppSidebarOwner(catalog, context, host);
   sidebarOwners.set(host, owner);
   owner.navigationCatalog = catalog;
-  owner.bindInputs(props, context);
+  owner.bindContext(context);
   owner.attention = createSessionAttention(
     context,
     owner.attentionQuestions,
@@ -85,9 +88,6 @@ function AppSidebarContent(props: AppSidebarProps, host: HTMLElement): JSX.Eleme
         })
       : undefined;
   });
-  owner.readContextualSidebar = createMemo(() => contextual()?.read(), {
-    equals: equalSidebarContext,
-  });
   const projection = projectSource(owner, {
     read: (current) => current,
     subscribe: (current, notify) => {
@@ -101,7 +101,7 @@ function AppSidebarContent(props: AppSidebarProps, host: HTMLElement): JSX.Eleme
         context.plugins.subscribe(current.sessionData.requestSessionDataUpdate),
         listen(window, SIDEBAR_HIDDEN_SESSION_CATALOGS_CHANGED_EVENT, () => {
           current.hiddenSessionCatalogIds = loadStoredHiddenSessionCatalogIds();
-          current.requestUpdate();
+          current.invalidate();
         }),
         listen(window, "openclaw:native-gateways-changed", () => {
           if (current.isConnected) {
@@ -129,7 +129,7 @@ function AppSidebarContent(props: AppSidebarProps, host: HTMLElement): JSX.Eleme
       snapshotPending();
       snapshotModel();
       Object.values(props);
-      void owner.contextualSidebar;
+      contextual()?.read();
       // Snapshot capture keeps observing Pages after its navigation view closes.
       void catalog.dashboards;
       // Arm presence deadlines before preparation can project a row.
@@ -144,13 +144,16 @@ function AppSidebarContent(props: AppSidebarProps, host: HTMLElement): JSX.Eleme
     { equals: false },
   );
   createSessionOwnerFilterQuery(owner.sessionOwnerFilter, prepared, () =>
-    context.sessions.listSnapshot(owner.sessionData.sessionListQuery(owner.expandedAgentId())),
+    owner.sidebarAgentsMode === "roster"
+      ? rosterActivityStore(context).snapshot
+      : context.sessions.listSnapshot(owner.sessionData.sessionListQuery(owner.expandedAgentId())),
   );
   const narrationEnabled = createMemo(() => {
     // Preparation reads narration while synchronizing the session projection.
     projection.revision();
     snapshotModel();
     Object.values(props);
+    contextual()?.read();
     return owner.narrationEnabled();
   });
   const narration = createMemo(() => {
@@ -164,7 +167,7 @@ function AppSidebarContent(props: AppSidebarProps, host: HTMLElement): JSX.Eleme
     const source = narration()?.();
     return source ? projectOwner(source, (current) => current.read()) : null;
   });
-  owner.readNarration = createParkedProjection(
+  const narrationState = createParkedProjection(
     () => narrationProjection()?.read(),
     () => props.navigationVisible,
   );
@@ -175,10 +178,14 @@ function AppSidebarContent(props: AppSidebarProps, host: HTMLElement): JSX.Eleme
       snapshotPending();
       snapshotModel();
       // Router context can reveal parked rows without an owner publication.
-      void owner.contextualSidebar;
+      contextual()?.read();
+      narrationState();
+      owner.attention.resolve();
       return projection.revision();
     },
     () => props.navigationVisible,
+    // Shell inputs finish preparing a hidden first mount; owner traffic stays parked.
+    () => Object.values(props),
   );
   const observed = new WeakMap<object, object>();
   const observe = <T extends object>(target: T): T => {
@@ -248,33 +255,32 @@ function AppSidebarContent(props: AppSidebarProps, host: HTMLElement): JSX.Eleme
     () => {
       prepared();
       narration()?.();
-      owner.readNarration();
+      narrationState();
       scroll.capture();
     },
-    () =>
-      untrack(() => {
-        owner.sessionData.refreshPresentation();
-        owner.commitRender();
-        if (owner.isConnected) {
-          owner.narration?.sync(owner.narrationSyncInput());
-        }
-        snapshot.capture();
-        people.syncRendered();
-        scroll.restore();
-        // The projection owns the display deadline; this mounted view owns its timer.
-        const deadline = owner.sessionProjection.subtitleDeadline;
-        if (owner.isConnected && Number.isFinite(deadline)) {
-          const timer = globalThis.setTimeout(
-            () => {
-              owner.sessionProjection.invalidate();
-              owner.requestUpdate();
-            },
-            Math.max(0, deadline - Date.now()),
-          );
-          return () => globalThis.clearTimeout(timer);
-        }
-        return undefined;
-      }),
+    () => {
+      owner.sessionData.refreshPresentation();
+      owner.commitRender();
+      if (owner.isConnected) {
+        owner.narration?.sync(owner.narrationSyncInput());
+      }
+      snapshot.capture();
+      people.syncRendered();
+      scroll.restore();
+      // The projection owns the display deadline; this mounted view owns its timer.
+      const deadline = owner.sessionProjection.subtitleDeadline;
+      if (owner.isConnected && Number.isFinite(deadline)) {
+        const timer = globalThis.setTimeout(
+          () => {
+            owner.sessionProjection.invalidate();
+            owner.invalidate();
+          },
+          Math.max(0, deadline - Date.now()),
+        );
+        return () => globalThis.clearTimeout(timer);
+      }
+      return undefined;
+    },
   );
   onSettled(() => {
     if (host.isConnected && !owner.isConnected) {
@@ -306,9 +312,7 @@ export type AppSidebarElement = SolidBridgeElement<AppSidebarProps, AppSidebarMe
 
 export const AppSidebar = defineSolidBridge<AppSidebarProps, AppSidebarMethods>(
   "openclaw-app-sidebar",
-  // Component setup must not subscribe the bridge's provider to this owner's revision.
-  (props, host) =>
-    untrack(() => (useOptionalApplication() ? AppSidebarContent(props, host) : props.children)),
+  (props, host) => (useOptionalApplication() ? AppSidebarContent(props, host) : props.children),
   {
     properties: appSidebarProperties,
     connected: (host) => sidebarOwners.get(host)?.attach(),

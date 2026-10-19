@@ -348,8 +348,10 @@ suite.define(() => {
 
     await modelSelect.waitFor(visible);
     const defaultOption = control(activePane, "model-default");
+    await modelSelect.click();
     await attribute(defaultOption, "aria-selected").toBe("true");
     expect(await defaultOption.getAttribute("data-chat-model-option")).toBe("openai/gpt-5.5");
+    await modelSelect.click();
 
     await selectModel(bedrockModel);
     const patchRequest = await gateway.waitForRequest("sessions.patch");
@@ -362,7 +364,9 @@ suite.define(() => {
 
     await switchSession(page, activePane, "agent:main:session-b", "Session B");
     await modelSelect.waitFor(visible);
+    await modelSelect.click();
     await attribute(defaultOption, "aria-selected").toBe("true");
+    await modelSelect.click();
 
     await switchSession(page, activePane, sessionA, "Session A");
 
@@ -400,12 +404,12 @@ suite.define(() => {
 
     const modelSelect = control(main, "model-select").first();
     await modelSelect.waitFor(visible);
-    expect(await modelSelect.textContent()).toContain("Claude Opus 4.5");
+    await expect.poll(() => modelSelect.textContent()).toContain("Claude Opus 4.5");
+    await modelSelect.click();
     await expect
       .poll(() => control(main, "model-default").first().getAttribute("aria-selected"))
       .toBe("true");
 
-    await modelSelect.click();
     await selectChatModelOption(option(main, "openai/gpt-5.5"));
     const firstPatch = await gateway.waitForRequest("sessions.patch");
     expect(requireRecord(firstPatch.params)).toEqual({
@@ -494,7 +498,7 @@ suite.define(() => {
     const expectedThinkingValues = thinkingLevels.map((level) => level.id).join(",");
 
     await modelSelect.waitFor(visible);
-    expect(await modelSelect.textContent()).toContain("GPT-5.6 Sol");
+    await expect.poll(() => modelSelect.textContent()).toContain("GPT-5.6 Sol");
     expect(await modelSelect.textContent()).not.toContain("@openai:");
     const inspectProfile = async () => {
       await modelSelect.click();
