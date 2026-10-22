@@ -24,7 +24,6 @@ import { createSafeNpmInstallArgs, createSafeNpmInstallEnv } from "./safe-packag
 
 type InstallSourceHardlinks = "package-manager" | "reject";
 
-const DEFAULT_INSTALL_SOURCE_HARDLINKS: InstallSourceHardlinks = "reject";
 const INSTALL_BASE_CHANGED_ERROR_MESSAGE = "install base directory changed during install";
 const INSTALL_BASE_CHANGED_ABORT_WARNING =
   "Install base directory changed during install; aborting staged publish.";
@@ -41,26 +40,6 @@ type HiddenProjectConfigFile = {
 
 type InstallPackageDirFailure = { ok: false; error: string; recoveryIncomplete?: boolean };
 type InstallPackageDirSuccess = { ok: true };
-
-export function hasPackageRuntimeDependencies(
-  manifest: {
-    dependencies?: Record<string, string>;
-    optionalDependencies?: Record<string, string>;
-    peerDependencies?: Record<string, string>;
-    peerDependenciesMeta?: Record<string, { optional?: boolean }>;
-  },
-  ignoredPeerDependencies: readonly string[] = [],
-): boolean {
-  return (
-    Object.keys(manifest.dependencies ?? {}).length > 0 ||
-    Object.keys(manifest.optionalDependencies ?? {}).length > 0 ||
-    Object.keys(manifest.peerDependencies ?? {}).some(
-      (name) =>
-        !ignoredPeerDependencies.includes(name) &&
-        manifest.peerDependenciesMeta?.[name]?.optional !== true,
-    )
-  );
-}
 
 async function sanitizeManifestForNpmInstall(
   targetDir: string,
@@ -138,12 +117,6 @@ async function restoreProjectNpmConfigAfterInstall(
   await fs.rm(hiddenConfig.hiddenDir, { recursive: true, force: true });
 }
 
-function isRelativePathInsideBase(relativePath: string): boolean {
-  return (
-    Boolean(relativePath) && relativePath !== ".." && !relativePath.startsWith(`..${path.sep}`)
-  );
-}
-
 function isInstallBaseChangedError(error: unknown): boolean {
   return error instanceof Error && error.message === INSTALL_BASE_CHANGED_ERROR_MESSAGE;
 }
@@ -162,13 +135,6 @@ async function assertInstallBaseStable(params: {
   }
 }
 
-async function cleanupInstallTempDir(dirPath: string | null): Promise<void> {
-  if (!dirPath) {
-    return;
-  }
-  await fs.rm(dirPath, { recursive: true, force: true }).catch(() => undefined);
-}
-
 async function resolveInstallPublishTarget(params: {
   installBaseDir: string;
   targetDir: string;
@@ -176,7 +142,11 @@ async function resolveInstallPublishTarget(params: {
   const installBaseResolved = path.resolve(params.installBaseDir);
   const targetResolved = path.resolve(params.targetDir);
   const targetRelativePath = path.relative(installBaseResolved, targetResolved);
-  if (!isRelativePathInsideBase(targetRelativePath)) {
+  if (
+    !targetRelativePath ||
+    targetRelativePath === ".." ||
+    targetRelativePath.startsWith(`..${path.sep}`)
+  ) {
     throw new Error("invalid install target path");
   }
   const installBaseRealPath = await fs.realpath(params.installBaseDir);
@@ -371,15 +341,13 @@ export async function installPackageDir<
     }
   };
   let stageDir: string | null = null;
+  let originalIdentity: Awaited<ReturnType<typeof readDirectoryIdentity>> | undefined;
   const published: {
     backup: MovePathPublicationReceipt | null;
     install: MovePathPublicationReceipt | null;
     restore: MovePathPublicationReceipt | null;
   } = { backup: null, install: null, restore: null };
-  const sourceHardlinks =
-    (params.sourceHardlinks ?? DEFAULT_INSTALL_SOURCE_HARDLINKS) === "package-manager"
-      ? "allow"
-      : "reject";
+  const sourceHardlinks = params.sourceHardlinks === "package-manager" ? "allow" : "reject";
   let quarantine:
     | { directory: string; identity: Awaited<ReturnType<typeof readDirectoryIdentity>> }
     | undefined;
@@ -429,6 +397,10 @@ export async function installPackageDir<
     published.install = null;
   };
   const fail = async (error: string, cause?: unknown) => {
+    const heldFileHint =
+      hasErrnoCode(cause, "EBUSY") || hasErrnoCode(cause, "EPERM")
+        ? ". Files may be held by another process; stop the Gateway and retry this update."
+        : "";
     const installBaseChanged = isInstallBaseChangedError(cause);
     let restoreError: string | undefined;
     if (installBaseChanged) {
@@ -440,7 +412,7 @@ export async function installPackageDir<
         restoreError = String(restoreFailure);
       }
       if (stageDir) {
-        await cleanupInstallTempDir(stageDir);
+        await fs.rm(stageDir, { recursive: true, force: true }).catch(() => undefined);
         stageDir = null;
       }
     }
@@ -453,7 +425,7 @@ export async function installPackageDir<
     const recoveryIncomplete = Boolean(restoreError || published.install || published.backup);
     return {
       ok: false as const,
-      error: [error, ...recovery].join("; "),
+      error: [error + heldFileHint, ...recovery].join("; "),
       ...(recoveryIncomplete ? { recoveryIncomplete: true } : {}),
     };
   };
@@ -463,6 +435,37 @@ export async function installPackageDir<
     }
     const restoring = published.backup;
     try {
+      if (!published.restore && fsSync.lstatSync(canonicalTargetDir, { throwIfNoEntry: false })) {
+        if (!originalIdentity) {
+          throw new Error(`install target changed during rollback: ${canonicalTargetDir}`);
+        }
+        const original = originalIdentity;
+        // Copy-fallback displacement can stop at a held file after deleting siblings.
+        // Synchronous filters recheck recovery authority before each missing entry is
+        // restored, without yielding between the check and write or touching held files.
+        fsSync.cpSync(restoring.path, canonicalTargetDir, {
+          recursive: true,
+          verbatimSymlinks: true,
+          force: false,
+          mode: fsSync.constants.COPYFILE_EXCL,
+          filter: (source, destination) => {
+            assertRollbackOwned(assertCurrent);
+            assertDirectoryIdentity(restoring.path, restoring);
+            assertDirectoryIdentity(canonicalTargetDir, original);
+            const existing = fsSync.lstatSync(destination, { throwIfNoEntry: false });
+            const sourceStat = fsSync.lstatSync(source);
+            if (
+              existing &&
+              (existing.isDirectory() !== sourceStat.isDirectory() ||
+                existing.isSymbolicLink() !== sourceStat.isSymbolicLink())
+            ) {
+              throw new Error(`install entry changed during rollback: ${destination}`);
+            }
+            return !existing || existing.isDirectory();
+          },
+        });
+        published.restore = { path: canonicalTargetDir, ...original };
+      }
       if (published.restore) {
         // A prior attempt restored the target; retry only its remaining backup cleanup.
         const restored = published.restore;
@@ -627,6 +630,7 @@ export async function installPackageDir<
       if (params.authorizeMutation) {
         await params.authorizeMutation();
       }
+      originalIdentity = await readDirectoryIdentity(canonicalTargetDir);
       await movePathWithCopyFallback({
         assertBeforeMutation: assertPersistentApply,
         onDestinationPublished: (receipt) => {
@@ -636,6 +640,8 @@ export async function installPackageDir<
         sourceHardlinks,
         to: backupPath,
       });
+      // Only incomplete displacement can leave the original at the target path.
+      originalIdentity = undefined;
     } catch (err) {
       return await fail(`${params.copyErrorPrefix}: ${String(err)}`, err);
     }
