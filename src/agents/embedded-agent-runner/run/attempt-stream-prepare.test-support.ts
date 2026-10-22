@@ -143,7 +143,9 @@ export async function createHeldSettlementSession() {
     await releaseSettlement.promise;
   };
   const { session } = await createTestSession({
-    resourceLoader: createResourceLoader(new Map([["agent_settled", [holdSettlement]]])),
+    resourceLoader: await createResourceLoader((api) => {
+      api.on("agent_settled", holdSettlement);
+    }),
   });
   streamMocks.streamSimple.mockImplementation((model) =>
     createAssistantResultStream(createAssistant(model, "Done.")),
@@ -249,7 +251,6 @@ export async function observeTerminalRunActivity(
       createMediaGenerationOperation({
         taskId: "tool:image_generate:terminal",
         status: "running",
-        createdAt: 1,
         taskKind: "image_generation",
         requesterSessionKey: sessionKey,
         runId: "tool:image_generate:terminal",

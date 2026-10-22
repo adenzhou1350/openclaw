@@ -14,9 +14,19 @@ import { hasOperatorAdminAccess, hasOperatorWriteAccess } from "../../app/operat
 import { formatUiError } from "../../lib/format-error.ts";
 import { t } from "../../lib/reactive/i18n.ts";
 
+type ModelAccountsSnapshot = {
+  gateway: ApplicationGatewaySnapshot;
+  identityId: string | null;
+  profileId: string | null;
+};
+
+export type ModelAccountsTargetSource = {
+  read: () => ModelAccountsSnapshot;
+  subscribe: (listener: () => void) => () => void;
+};
+
 export type ModelAccountsProps = {
-  identityId?: string | null;
-  profileId?: string | null;
+  target: ModelAccountsTargetSource;
   personLabel?: string | null;
 };
 
@@ -47,6 +57,8 @@ export class ModelAccountsState {
   connectFlow: (UsersAuthConnectStartResult & { step?: WizardStep }) | null = null;
   stepValue: unknown;
   statusUnavailable = false;
+  catalogReceipt = { result: Promise.resolve<string | null>(null) };
+  statusReceipt = { result: Promise.resolve<string | null>(null) };
 
   target: AccountTarget | null = null;
   generation = 0;
@@ -66,7 +78,11 @@ export class ModelAccountsState {
     this.stopPoll();
   }
 
-  applySnapshot(snapshot: ApplicationGatewaySnapshot, props: ModelAccountsProps) {
+  applySnapshot({
+    gateway: snapshot,
+    identityId: profileIdentityId,
+    profileId: canonicalProfileId,
+  }: ModelAccountsSnapshot) {
     const transportConnected = snapshot.phase === "connected";
     const connected = transportConnected && snapshot.selfUser !== undefined;
     const connectionChanged =
@@ -80,7 +96,7 @@ export class ModelAccountsState {
       : (this.target?.identityId ?? null);
     // users.self returns canonical IDs while presence may still name a merged alias.
     // Bind the parent's canonical result to its exact authenticated connection identity.
-    const profileId = client && identityId === props.identityId ? props.profileId : null;
+    const profileId = client && identityId === profileIdentityId ? canonicalProfileId : null;
     const canAdmin = transportConnected
       ? canWrite && hasOperatorAdminAccess(snapshot.hello?.auth ?? null)
       : (this.target?.canAdmin ?? false);
@@ -99,6 +115,8 @@ export class ModelAccountsState {
     this.inventoryRequest += 1;
     this.inventoryLoading = false;
     this.inventoryError = null;
+    this.catalogReceipt = { result: Promise.resolve(null) };
+    this.statusReceipt = { result: Promise.resolve(null) };
     this.action = null;
     this.error = null;
     this.notice = null;
@@ -233,7 +251,7 @@ export class ModelAccountsState {
 
   openSignIn() {
     this.signIn = { providers: [], provider: "", method: "" };
-    void this.runAction(
+    const pending = this.runAction(
       "request",
       (target) =>
         target.client.request<UsersAuthConnectCatalogResult>("users.authConnect.catalog", {
@@ -243,6 +261,11 @@ export class ModelAccountsState {
         this.signIn = { providers: result.providers, provider: "", method: "" };
       },
     );
+    const generation = this.generation;
+    this.catalogReceipt = {
+      result: pending.then(() => (this.generation === generation ? this.error : null)),
+    };
+    this.publish();
   }
 
   selectProvider(provider: string) {
@@ -319,7 +342,7 @@ export class ModelAccountsState {
     if (!flow) {
       return;
     }
-    void this.runAction(
+    const pending = this.runAction(
       action === "status" ? "request" : action,
       (target) =>
         target.client.request<UsersAuthConnectStatusResult>(`users.authConnect.${action}`, {
@@ -328,6 +351,22 @@ export class ModelAccountsState {
         }),
       (result) => this.applyConnectStatus(result),
     );
+    if (action === "status") {
+      const generation = this.generation;
+      this.statusReceipt = {
+        result: pending.then(() => {
+          if (this.generation !== generation) {
+            return null;
+          }
+          if (this.error && this.connectFlow) {
+            this.statusUnavailable = true;
+            this.publish();
+          }
+          return this.error;
+        }),
+      };
+      this.publish();
+    }
   }
 
   answerStep(stepId: string, value: unknown) {

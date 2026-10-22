@@ -27,15 +27,13 @@ import { bootstrapHarnessContextEngine } from "../../harness/context-engine-life
 import { relocateCurrentRuntimeContextCarrierToTail } from "../../internal-runtime-context.js";
 import type { AgentMessage } from "../../runtime/index.js";
 import { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
-import {
-  type AgentSession,
-  type CreateAgentSessionOptions,
-  SessionManager,
-} from "../../sessions/index.js";
+import type { AgentSession } from "../../sessions/agent-session.js";
 import { DefaultResourceLoader } from "../../sessions/resource-loader.js";
-import { createAgentSession } from "../../sessions/sdk.js";
+import { createAgentSession, type CreateAgentSessionOptions } from "../../sessions/sdk.js";
 import { withSessionManagerAppend } from "../../sessions/session-manager-append-admission.js";
+import { isOutOfTurnHistoryEntry } from "../../sessions/session-manager-codec.js";
 import { sessionManagerOpenTranscriptCohort } from "../../sessions/session-manager-core.js";
+import { SessionManager } from "../../sessions/session-manager.js";
 import { wrapToolDefinition } from "../../sessions/tools/tool-definition-wrapper.js";
 import { resolveToolSearchCatalogTool } from "../../tool-search.js";
 import { runContextEngineMaintenance } from "../context-engine-maintenance.js";
@@ -387,6 +385,11 @@ export async function prepareEmbeddedAttemptSessionBoundary(input: {
         const orphanProvenance = normalizeInputProvenance(
           candidate?.messageEntry.message.provenance,
         );
+        // Talk speech is mirrored before its distinct hidden consult input is persisted.
+        // Keep the speech durable; the merged prompt already carries it for this attempt.
+        if (candidate && isOutOfTurnHistoryEntry(candidate.messageEntry)) {
+          candidate.removeLeaf = false;
+        }
         // Keep unanswered user input in history through failed internal continuations.
         const preserveUnansweredUser =
           shouldPreserveUserFacingSessionStateForInputProvenance(attempt.inputProvenance) &&

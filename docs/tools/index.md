@@ -158,6 +158,26 @@ bindings select what the schema advertises, while normal delivery permissions
 still govern execution. Unchanged bindings and capabilities produce stable schema
 bytes regardless of plugin registration order.
 
+Completion and settle turns with a source-bound `message` grant may send text,
+`media`, or `attachments`, including media-only replies, the optional `caption`,
+and file metadata (`filename`, `contentType`, or `mimeType`).
+`MEDIA:` directives and remote Markdown images use the normal outbound media policy.
+Local files supplied through `media`, `attachments`, or `MEDIA:` must be within
+the allowed `mediaAccess.localRoots`; local Markdown image paths stay literal text.
+The action stays `send`; channel, account, destination, and thread stay locked to
+the current conversation. `replyTo` may name the current message or thread, but
+cannot select another reply target. Inline reply and `audio_as_voice` directives
+remain unavailable on this restricted grant.
+
+In Control UI/Webchat, publish a local HTML report to the current conversation
+with `message(action=send, media=<path>)`, omitting the target. OpenClaw checks the
+current file-read and delivery permissions, validates the HTML, and saves an
+attachment snapshot. A parent agent can publish its final revision of a child
+agent's report using its own read permission. Use self-contained HTML; relative
+assets are not bundled. This explicit send does not grant generated-file
+provenance: automatic `MEDIA:` replies retain their existing HTML restrictions,
+and the preview keeps its existing sandbox and script controls.
+
 OpenClaw exposes one semantic image inspection capability named `view_image`.
 When the active harness supplies its own loader, OpenClaw suppresses its
 duplicate. Otherwise, the OpenClaw-provided implementation accepts `path` for
