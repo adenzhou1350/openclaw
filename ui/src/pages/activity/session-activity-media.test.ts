@@ -31,16 +31,18 @@ beforeEach(() => {
   vi.stubGlobal(
     "IntersectionObserver",
     class {
-      private target?: Element;
+      private readonly targets = new Set<Element>();
       constructor(private callback: IntersectionObserverCallback) {}
       observe(target: Element) {
-        this.target = target;
-        observers.set(target, (visible) =>
-          this.callback(
-            [{ target, isIntersecting: visible } as IntersectionObserverEntry],
-            this as unknown as IntersectionObserver,
-          ),
-        );
+        this.targets.add(target);
+        observers.set(target, (visible) => {
+          if (this.targets.has(target)) {
+            this.callback(
+              [{ target, isIntersecting: visible } as IntersectionObserverEntry],
+              this as unknown as IntersectionObserver,
+            );
+          }
+        });
         // These fixtures place thumbnails inside the explicitly admitted row.
         queueMicrotask(() => {
           if (target.matches(".chat-image-frame")) {
@@ -48,10 +50,15 @@ beforeEach(() => {
           }
         });
       }
+      unobserve(target: Element) {
+        this.targets.delete(target);
+        observers.delete(target);
+      }
       disconnect() {
-        if (this.target) {
-          observers.delete(this.target);
+        for (const target of this.targets) {
+          observers.delete(target);
         }
+        this.targets.clear();
       }
     },
   );
@@ -361,6 +368,7 @@ it.each([
       }
       expect(action!.disabled).toBe(true);
       expect(action!.textContent?.trim()).toBe("Loading…");
+      expect(olderAction(row)).toBe(action);
       older.resolve(images("older", revalidate ? 1 : 4));
       await settleTimers();
       if (revalidate) {

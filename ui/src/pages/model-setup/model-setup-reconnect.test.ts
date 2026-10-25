@@ -6,6 +6,7 @@ import type { SystemAgentSetupDetectResult } from "../../api/types.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { i18n } from "../../i18n/index.ts";
 import { createAgentCapability } from "../../lib/agents/index.ts";
+import { sourceConfigSnapshot } from "../../lib/config/config-snapshot.test-support.ts";
 import { createRuntimeConfigCapability } from "../../lib/config/runtime-config-capability.ts";
 import { createApplicationContextProvider } from "../../test-helpers/application-context.ts";
 import {
@@ -14,7 +15,6 @@ import {
   authButton,
   waitForElement,
   waitForText,
-  configSnapshot,
   createFirstRunContext,
   detection as emptyDetection,
   runningStep,
@@ -217,7 +217,7 @@ describe("ModelSetupPage detection ownership", () => {
         });
       }
       if (method === "config.get") {
-        return configSnapshot();
+        return sourceConfigSnapshot();
       }
       return method === "openclaw.setup.detect" ? detection : {};
     });
@@ -230,6 +230,11 @@ describe("ModelSetupPage detection ownership", () => {
     setGatewayPhase("reconnecting");
     setGatewayPhase("connected");
     await waitForText(page, "Enter the selected provider key");
+    await vi.waitFor(() => {
+      expect(page.querySelector<HTMLInputElement>("#model-setup-wizard-text-input")?.disabled).toBe(
+        false,
+      );
+    });
     expect(oldWizardSignal?.aborted).toBe(true);
     expect(callsFor(request, "openclaw.setup.auth.start")).toHaveLength(1);
     expect(callsFor(request, "wizard.cancel")).toHaveLength(0);
