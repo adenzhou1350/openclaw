@@ -283,9 +283,17 @@ openclaw-session-owner-chip .viewer-avatar__initials {
   line-height: 1;
 }
 
+.session-css-icon {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  flex: none;
+  background: currentColor;
+  mask: center / contain no-repeat;
+}
+
 .session-glyph__icon,
-.session-glyph__icon svg,
-.session-glyph__icon img {
+.session-glyph__icon > * {
   width: 16px;
   height: 16px;
 }
@@ -543,7 +551,6 @@ openclaw-session-owner-chip .viewer-avatar__initials {
 .btn--icon svg,
 .agent-select__chevron svg,
 .agent-select__avatar--icon svg,
-.session-row-badge svg,
 .session-action svg,
 .chat-queue__leading svg,
 .chat-queue__remove svg,
@@ -1062,8 +1069,9 @@ select.settings-select:not([multiple]) {
 }
 
 .field.checkbox {
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
+  overflow-wrap: anywhere;
 }
 
 .config-form .field.checkbox {
@@ -2172,6 +2180,7 @@ td.data-table-key-col {
 /* The confirm opt-out is a control, not a continuation of the message copy, so it
    takes the same 12px separation the details block uses and keeps the 16px action
    gap below it. Without the margin it reads as a third line of the paragraph. */
+
 .exec-approval-skip {
   margin-top: 12px;
   column-gap: 10px;
@@ -2186,10 +2195,6 @@ td.data-table-key-col {
 .exec-approval-actions:not(openclaw-modal-actions) {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-}
-
-.exec-approval-actions .btn {
   gap: 8px;
 }
 
@@ -2358,9 +2363,8 @@ td.data-table-key-col {
 }
 
 .agent-select__avatar {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  display: inline-grid;
+  place-items: center;
   width: 20px;
   height: 20px;
   border-radius: 50%;
@@ -2838,12 +2842,6 @@ td.data-table-key-col {
 .session-row-badge--cloud[data-workspace-conflicts],
 .session-row-badge--cloud[data-disk-space-status="warning"] {
   color: var(--warn);
-}
-
-.session-row-badge svg {
-  width: 12px;
-  height: 12px;
-  stroke-width: 1.6px;
 }
 
 .session-row-actions {

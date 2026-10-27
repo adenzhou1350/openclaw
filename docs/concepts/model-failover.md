@@ -70,6 +70,11 @@ Anthropic streaming errors retain their structured error type, so rate limits,
 overload, and authentication failures follow the same recovery policy even when
 the provider's message is generic.
 
+Local worker deadlines and capacity refusals stop model fallback because another
+provider cannot repair local saturation. Capacity errors ask you to check for
+completed work before trying again. Genuine provider HTTP errors keep the normal
+fallback policy.
+
 Local transcript write conflicts do not retry the model, rotate accounts, or
 trigger model fallback. The transcript owner rereads the current revision and
 retries an eligible append once. A repeated conflict is reported as a local
@@ -144,41 +149,38 @@ reason `agent_run_terminal_timeout` or `idle_timeout_circuit_breaker`. These are
 terminal stops, not provider failures or requests to try another model. The
 existing run deadline and cost limits still apply.
 
+Fallback requests reuse the original user turn and its attachments exactly once.
+Fresh plugin context for the fallback model is added separately, preserving the
+user turn and the prompt prefix already sent to the primary model.
+
 ## Automatic cyber-policy escalation
 
-The embedded OpenClaw runtime retries one replay-safe OpenAI cyber-policy refusal on Daybreak
-Blue. This includes normal embedded turns using the ChatGPT-authenticated OpenAI Responses
-transport, not only Codex plugin sessions. That transport projects OpenAI's structured cyber-policy
-error into the refusal metadata used by this policy, from every terminal path it can arrive on: a
-non-OK HTTP body, a streamed `error` event, and a `response.failed` event. Generic refusal text
-without a structured cyber category remains terminal.
+A structured OpenAI cyber-policy refusal can trigger one **Access configuration retry**:
+OpenClaw keeps the same model, provider, runtime, account, effort, and speed, and retries
+with `access_programs: { cyber: "daybreak_blue" }`. This is not model failover and does
+not require a different model or a nonempty model fallback list. An exact model pin
+therefore remains in force.
 
-This policy route is turn-local: it does not change the selected session model and it does not send
-ordinary provider failures to Daybreak. Codex-backed sessions keep their separate plugin-owned
-policy described in [Codex harness runtime behavior](/plugins/codex-harness/runtime-behavior#automatic-daybreak-escalation).
+The default `cyberFailover.mode: "auto"` applies only to a replay-safe refusal from the
+current attempt. Generic refusal text, other policy categories, cancellation, and
+attempts with committed side effects do not qualify. The selected account must advertise
+Blue for this model and runtime on its current route; an unknown or missing grant does
+not authorize a request. A turn already using Blue or Red is never retried or downgraded.
+Model names and retiring aliases are not evidence of entitlement.
 
-The default target is `openai/gpt-daybreak-blue-latest`. The retry runs only when all of these are
-true:
+The embedded Responses transport recognizes structured cyber refusals from HTTP error
+bodies, streamed `error` events, and `response.failed` events. Native Codex uses its
+[plugin-owned retry](/plugins/codex-harness/runtime-behavior#automatic-daybreak-escalation)
+and validates the same account's native capabilities before `turn/start`.
 
-- the selected embedded attempt reports `provider_refusal` with provider `openai` and category
-  `cyber`;
-- the attempt's replay metadata proves that no tool or delivery side effect would be repeated;
-- the target differs from the model that was refused;
-- the selection is not strict; and
-- the feature is enabled.
+The retry is turn-local and does not save a new session model or Access setting. If it
+fails without committing work, the original refusal is preserved. If the retry commits
+work or is cancelled, its own result and receipts are retained. Recorded terminal stops
+and unclassified errors are not swallowed. An authorization denial temporarily suppresses
+further Blue attempts for that session/model/account without cooling down ordinary
+Standard requests.
 
-A strict selection stays strict. A locked model selection reaches the runner as an explicit empty
-fallback list, and this policy honors that the same way ordinary fallback does: the refusal remains
-terminal until the operator unlocks the selection.
-
-If the Daybreak attempt fails without committing work, OpenClaw preserves the original provider
-refusal instead of trying unrelated configured fallbacks. If the retry already executed a tool or
-delivered output before failing, its own result is kept instead, because its replay verdict,
-delivery evidence, and terminal receipt describe what actually ran. If the retry throws anything
-other than an ordinary failover-class error, that exception propagates unchanged: a recorded
-terminal stop prohibits replay, and an unclassified throw is how the fallback runner reports an
-attempt that already committed work. An authorization failure cools down that target for the
-current session before another cyber refusal checks it again.
+To disable automatic Access escalation:
 
 ```json5
 {
@@ -186,8 +188,7 @@ current session before another cyber refusal checks it again.
     defaults: {
       embeddedAgent: {
         cyberFailover: {
-          mode: "auto", // or "off"
-          model: "openai/gpt-daybreak-blue-latest",
+          mode: "off", // "auto" is the default
           cooloffMs: 600000,
         },
       },
@@ -196,8 +197,11 @@ current session before another cyber refusal checks it again.
 }
 ```
 
-General model fallback ordering is unchanged. A non-cyber refusal, a Codex/native-harness result,
-or any replay-unsafe attempt remains terminal under the existing refusal policy.
+The retired `cyberFailover.model` setting is removed by `openclaw doctor --fix`,
+which preserves `mode` and `cooloffMs`. Ordinary configured cross-model fallback remains
+separate and unchanged. The Blue/Red model aliases retire on October 28, 2026; choose an
+actual available model and let Access select the program rather than inventing an alias
+successor.
 
 ## Selection source policy
 
@@ -334,6 +338,8 @@ A delayed WHAM failure check cannot reinstate an exhaustion block after a newer 
     That rate-limit bucket is broader than plain `429`: it also includes provider messages such as `Too many concurrent requests`, `ThrottlingException`, `concurrency limit reached`, `workers_ai ... quota limit exceeded`, `throttled`, `resource exhausted`, and periodic usage-window limits such as `weekly limit reached` or `monthly limit exhausted`.
 
     Format/invalid-request errors are usually terminal because retrying the same payload would fail the same way, so OpenClaw surfaces them instead of rotating auth profiles. Known retry-repair paths can opt in explicitly: for example Cloud Code Assist tool call ID validation failures are sanitized and retried once through the `allowFormatRetry` policy.
+
+    HTTP 400/422 responses with no body or only a whole-body redaction placeholder stay unclassified because they contain no surviving evidence of a format failure.
 
     OpenAI-compatible **provider-completed** stop/finish reasons such as `Unhandled stop reason: error`, `stop reason: error`, `reason: error`, and `Provider finish_reason: error` are classified as **`server_error`** (HTTP-like status 500), not timeout. They remain failover-worthy for model or auth-profile rotation, but diagnostics keep the provider finish-reason text instead of rewriting the user copy to "LLM request timed out." Transport-shaped finish reasons such as `Provider finish_reason: abort`, `network_error`, and `malformed_response` stay in the timeout/failover bucket (status 408).
 
@@ -589,7 +595,7 @@ These notices are operational messages, not assistant content. They deliver once
 
 Persisted notice state prevents repeated notices when consecutive turns use the same selected/active pair, while model selection itself remains unchanged.
 
-For admitted session runs, the Control UI records attempted fallback switches as transcript event dividers, using the same presentation as compaction events. It shows the previous model, the fallback being tried, and the reason for the switch while that candidate is still working. The event remains in history after reload and does not claim the fallback succeeded. When a later turn successfully returns to the selected model, a matching **Returned to selected model** divider records the fallback and selected model. Starting a new attempt or failing on the selected model does not record a successful return.
+When a fallback or recovery transcript event was recorded for the active model, the Control UI uses its divider instead of an additional assistant status message. When unavailable profiles skip the selected model before runtime admission, a successful fallback records the transition after it obtains the same admitted writer authority. If no matching event can be persisted, the ordinary status notice is not suppressed. Channel and native-client status delivery remains unchanged. The Control UI records attempted fallback switches using the same presentation as compaction events. It shows the previous model, the fallback being tried, and the reason for the switch while that candidate is still working. The event remains in history after reload and does not claim the fallback succeeded. When a later turn successfully returns to the selected model, a matching **Returned to selected model** divider records the fallback and selected model. Starting a new attempt or failing on the selected model does not record a successful return.
 
 While recovery is in progress, the Control UI updates the working claw with **Retrying…**, a countdown when the runtime reports a retry deadline, or **Trying fallback model…**. Individual failed attempts do not become warning messages, including after a history reload. When the run recovers, the status returns to normal and the successful answer appears without a failure notice. Hidden internal continuation prompts do not start a new user turn for recovery matching.
 

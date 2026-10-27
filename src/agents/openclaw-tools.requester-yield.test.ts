@@ -105,6 +105,48 @@ it.each([
   },
 );
 
+it.each(["registry child", "runtime claim"] as const)(
+  "yields for a subagent's own %s without publishing a message-wait pause notice",
+  async (source) => {
+    // The subagent is itself a running announced child of agent:main:main.
+    const runner = await seedNativeChild({
+      runId: "run-runner",
+      childSessionKey: "agent:main:subagent:runner",
+    });
+    if (source === "registry child") {
+      // ...and this turn of the subagent spawned a leaf whose completion resumes it.
+      await seedRequiredChild(runner.childSessionKey, {
+        runId: "run-leaf",
+        childSessionKey: "agent:main:subagent:leaf",
+        requesterTurnRunId: runner.runId,
+      });
+    }
+    const onYield = vi.fn();
+    const tool = createYieldToolForTurn({
+      requesterSessionKey: runner.childSessionKey,
+      requesterTurnRunId: runner.runId,
+      ...(source === "runtime claim" ? { claimYieldCompletion: () => true } : {}),
+      onYield,
+    });
+
+    await expectYield(
+      tool,
+      {
+        status: "yielded",
+        acknowledgment: "Handoff: leaf pending",
+        note: expect.stringContaining('waitFor: "message" was not applied'),
+      },
+      { waitFor: "message", acknowledgment: "Handoff: leaf pending" },
+    );
+    // An ordinary child wait: no message wait is recorded for the runtime, and the
+    // runner's requester is not told it is paused awaiting a sessions_send.
+    expect(onYield).toHaveBeenCalledWith("Turn yielded.", "Handoff: leaf pending", undefined);
+    const after = getSubagentRunByRunId(runner.runId);
+    expect(after?.requesterSettleWake?.pauseNotice).toBeUndefined();
+    expect(after?.execution.status).toBe("running");
+  },
+);
+
 function createYieldToolForTurn({
   onYield = vi.fn(),
   ...claim
@@ -167,10 +209,7 @@ describe("requester yield ownership", () => {
     resetProcessRegistryForTests();
   });
 
-  it.each([
-    [CRON_RUN_KEY, false, "no requester continuation"],
-    ["agent:main:subagent:collector", true, "collected explicitly"],
-  ] as const)(
+  it.each([["agent:main:subagent:collector", true, "collected explicitly"]] as const)(
     "rejects %s before claim, intent, or yield",
     async (requesterSessionKey, swarmCollector, error) => {
       await seedRequiredChild(requesterSessionKey);
@@ -401,18 +440,20 @@ describe("requester yield ownership", () => {
     }
   });
 
-  it("omits yield for the execution identity and leaves its child owned", async () => {
+  it("ends the automation execution and leaves child delivery scheduler-owned", async () => {
     await seedRequiredChild();
     const before = structuredClone(getSubagentRunByRunId("run-child"));
+    const onYield = vi.fn();
     const tools = createTestOpenClawTools({
       sessionKey: "agent:main:telegram:default:direct:1234",
       runSessionKey: CRON_RUN_KEY,
       sessionId: "cron-requester-session",
       runId: "run-requester",
-      onYield: vi.fn(),
+      onYield,
     });
 
-    expect(tools.map((tool) => tool.name)).not.toContain("sessions_yield");
+    await expectYield(requireTool(tools, "sessions_yield"), "yielded");
+    expect(onYield).toHaveBeenCalledExactlyOnceWith("Turn yielded.", undefined, undefined);
     expect(getSubagentRunByRunId("run-child")).toEqual(before);
   });
 
@@ -544,7 +585,7 @@ describe("requester yield ownership", () => {
         runtimeToolAllowlist: runtime,
         inheritRuntimeToolAllowlist: true,
       });
-      expect(parent.map((tool) => tool.name)).not.toContain("sessions_yield");
+      expect(parent.some((tool) => tool.name === "sessions_yield")).toBe(allowed);
       expect(inheritedToolAllowlistRef.includes("sessions_yield")).toBe(allowed);
       const childSessionKey = "agent:main:subagent:policy-child";
       await replaceSessionEntry(
