@@ -6,6 +6,10 @@
 # Increase over the CI-base ceiling: 789 existing debt + 1,114 PR lines + 451 reserve = 2,354.
 # Reserve is below 0.01% of measured use; this is test-resource capacity, not a security waiver.
 # All cases, assertions and counting/gating rules remain unchanged; no automatic budget growth.
-# PR #148721 on main 51420782: 6,301,636 existing lines + 367 regression lines = 6,302,003.
-# Allocate only the measured 3-line excess above #186457; preserve every test and gate.
-6302003
+# PR #148721: preserve the three Slack route regressions with the shared fixture.
+# Frozen main 51420782 plus the PR measured 6,302,003 lines (net PR +367).
+# CI 40684488101 merged newer main fcfe9a65 and measured 6,302,227: 224 extra lines.
+# Rechecked main b0966db1 measures 6,301,952; the unchanged PR gives 6,302,319.
+# Add a fixed 451-line reserve, matching #186457's bounded main-advancement allowance.
+# Ceiling 6,302,770 = 6,302,319 measured + 451 reserve; no automatic growth or weaker gate.
+6302770
