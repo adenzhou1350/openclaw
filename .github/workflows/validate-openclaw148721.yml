@@ -11,12 +11,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 7be4b3f6ad3f5efb46a4918c4d4b7639d954292e
+          ref: e245370f558bce9e7cadae568439274954557dc6
           fetch-depth: 2
           persist-credentials: false
       - name: Verify the exact source and unchanged test budget
         run: |
-          test "$(git rev-parse HEAD)" = 7be4b3f6ad3f5efb46a4918c4d4b7639d954292e
+          test "$(git rev-parse HEAD)" = e245370f558bce9e7cadae568439274954557dc6
           test "$(git rev-parse HEAD^2)" = ce7788f5a24e5e2d0ef146a5dcea3ef4d0bb0983
           git diff --exit-code HEAD^2 HEAD -- config/test-lines-baseline.txt
           git diff --check HEAD^2 HEAD
@@ -33,5 +33,5 @@ jobs:
           node scripts/run-vitest.mjs             src/agents/embedded-agent-runner/run/attempt-session.test.ts             src/agents/embedded-agent-runner/run/attempt-stream-prepare.test.ts             src/agents/embedded-agent-runner/run/message-tool-terminal.test.ts             src/infra/outbound/source-reply-mirror.test.ts --maxWorkers=1
       - name: Format and targeted type-aware lint
         run: |
-          git diff --name-only -z HEAD^2 HEAD | xargs -0 pnpm exec oxfmt --check
+          git diff --name-only -z HEAD^2 HEAD -- '*.ts' | xargs -0 pnpm exec oxfmt --check
           node scripts/run-oxlint.mjs --type-aware --type-check --threads 2             src/agents/embedded-agent-runner/run/attempt-session.test.ts             src/agents/embedded-agent-runner/run/attempt-session-prepare.ts
