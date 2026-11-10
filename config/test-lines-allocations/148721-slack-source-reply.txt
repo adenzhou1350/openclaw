@@ -1,2 +1,0 @@
-# Preserve the existing Slack source-reply regression coverage in PR #148721.
-367
