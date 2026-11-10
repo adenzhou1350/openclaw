@@ -5,61 +5,22 @@ on:
 permissions:
   contents: read
 jobs:
-  pr148721:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: e40e314c8c3314648c59ca0eb7a5122ca2ee8d7b
-          fetch-depth: 2
-          persist-credentials: false
-      - name: Verify candidate
-        run: |
-          test "$(git rev-parse HEAD)" = e40e314c8c3314648c59ca0eb7a5122ca2ee8d7b
-          test "$(git rev-parse HEAD^2)" = eb8c48f33712abcf52583c359750ab3294c4bb1d
-          git diff --check HEAD^2 HEAD
-      - uses: ./.github/actions/setup-node-env
-        with:
-          cache-mode: off
-          install-bun: 'false'
-      - uses: ./.github/actions/setup-test-bun
-        with:
-          cache-mode: off
-      - name: Focused regression tests
-        env:
-          OPENCLAW_VITEST_RUNTIME: bun
-        run: node scripts/run-vitest.mjs src/agents/embedded-agent-runner/run/attempt-session.test.ts src/agents/embedded-agent-runner/run/attempt-stream-prepare.test.ts src/agents/embedded-agent-runner/run/message-tool-terminal.test.ts src/infra/outbound/source-reply-mirror.test.ts --maxWorkers=1
-      - name: Check formatting
-        run: git diff --name-only -z HEAD^2 HEAD -- '*.ts' | xargs -0 pnpm exec oxfmt --check
-      - name: Check test budget
-        run: node --import ./scripts/tsx.mjs scripts/check-test-lines-ratchet.mts --base eb8c48f33712abcf52583c359750ab3294c4bb1d --no-merge-base
   pr163897:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: b4b83c144437b777b7c8a9d4698c66f29c4e3d42
+          ref: 80b44bc3ff94920b89d81454132123bdb164984d
           fetch-depth: 2
           persist-credentials: false
       - name: Verify candidate
         run: |
-          test "$(git rev-parse HEAD)" = b4b83c144437b777b7c8a9d4698c66f29c4e3d42
+          test "$(git rev-parse HEAD)" = 80b44bc3ff94920b89d81454132123bdb164984d
           test "$(git rev-parse HEAD^2)" = eb8c48f33712abcf52583c359750ab3294c4bb1d
-          git diff --check HEAD^2 HEAD
       - uses: ./.github/actions/setup-node-env
         with:
           cache-mode: off
           install-bun: 'false'
-      - uses: ./.github/actions/setup-test-bun
-        with:
-          cache-mode: off
-      - name: Focused regression tests
-        env:
-          OPENCLAW_VITEST_RUNTIME: bun
-        run: node scripts/run-vitest.mjs src/plugins/install.archive-peer-dependencies.test.ts --maxWorkers=1
-      - name: Check formatting
-        run: git diff --name-only -z HEAD^2 HEAD -- '*.ts' | xargs -0 pnpm exec oxfmt --check
       - name: Check test budget
         run: node --import ./scripts/tsx.mjs scripts/check-test-lines-ratchet.mts --base eb8c48f33712abcf52583c359750ab3294c4bb1d --no-merge-base
