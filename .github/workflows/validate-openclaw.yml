@@ -1,0 +1,36 @@
+name: OpenClaw 163897 repair validation
+on:
+  push:
+    branches: [codex/openclaw163897-validation-20261112]
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 1cde6ec6e178bd7ed7c7f1914cc30797dfb31c41
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify candidate
+        run: |
+          test "$(git rev-parse HEAD)" = 1cde6ec6e178bd7ed7c7f1914cc30797dfb31c41
+          test "$(git rev-parse HEAD^2)" = c324818cbf86074f34578d07f381b0d2835955a1
+          git diff --check HEAD^2 HEAD
+      - uses: ./.github/actions/setup-node-env
+        with:
+          cache-mode: off
+          install-bun: 'false'
+      - uses: ./.github/actions/setup-test-bun
+        with:
+          cache-mode: off
+      - name: Focused regressions
+        env:
+          OPENCLAW_VITEST_RUNTIME: bun
+        run: node scripts/run-vitest.mjs src/plugins/install.archive-peer-dependencies.test.ts src/infra/install-package-dir.test.ts src/infra/install-package-dir.manifest.test.ts src/infra/install-package-dir.rollback.test.ts --maxWorkers=1
+      - name: Format
+        run: git diff --name-only -z HEAD^2 HEAD -- '*.ts' | xargs -0 pnpm exec oxfmt --check
+      - name: Test budget
+        run: node --import ./scripts/tsx.mjs scripts/check-test-lines-ratchet.mts --base c324818cbf86074f34578d07f381b0d2835955a1 --no-merge-base
