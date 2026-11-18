@@ -1,7 +1,7 @@
-name: OpenClaw PR repair validation
+name: OpenClaw 148721 conflict validation
 on:
   push:
-    branches: [codex/openclaw-pr-validation-20261110-late]
+    branches: [codex/openclaw148721-validation-20261118]
 permissions:
   contents: read
 jobs:
@@ -11,13 +11,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: e40e314c8c3314648c59ca0eb7a5122ca2ee8d7b
+          ref: dbd1d0b95f85ba55b34211c8a737165110e2f56f
           fetch-depth: 2
           persist-credentials: false
       - name: Verify candidate
         run: |
-          test "$(git rev-parse HEAD)" = e40e314c8c3314648c59ca0eb7a5122ca2ee8d7b
-          test "$(git rev-parse HEAD^2)" = eb8c48f33712abcf52583c359750ab3294c4bb1d
+          test "$(git rev-parse HEAD)" = dbd1d0b95f85ba55b34211c8a737165110e2f56f
+          test "$(git rev-parse HEAD^2)" = f7c6804343843245d8ab6f37a91675ecc257a7b9
           git diff --check HEAD^2 HEAD
       - uses: ./.github/actions/setup-node-env
         with:
@@ -33,33 +33,6 @@ jobs:
       - name: Check formatting
         run: git diff --name-only -z HEAD^2 HEAD -- '*.ts' | xargs -0 pnpm exec oxfmt --check
       - name: Check test budget
-        run: node --import ./scripts/tsx.mjs scripts/check-test-lines-ratchet.mts --base eb8c48f33712abcf52583c359750ab3294c4bb1d --no-merge-base
-  pr163897:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: b4b83c144437b777b7c8a9d4698c66f29c4e3d42
-          fetch-depth: 2
-          persist-credentials: false
-      - name: Verify candidate
-        run: |
-          test "$(git rev-parse HEAD)" = b4b83c144437b777b7c8a9d4698c66f29c4e3d42
-          test "$(git rev-parse HEAD^2)" = eb8c48f33712abcf52583c359750ab3294c4bb1d
-          git diff --check HEAD^2 HEAD
-      - uses: ./.github/actions/setup-node-env
-        with:
-          cache-mode: off
-          install-bun: 'false'
-      - uses: ./.github/actions/setup-test-bun
-        with:
-          cache-mode: off
-      - name: Focused regression tests
-        env:
-          OPENCLAW_VITEST_RUNTIME: bun
-        run: node scripts/run-vitest.mjs src/plugins/install.archive-peer-dependencies.test.ts --maxWorkers=1
-      - name: Check formatting
-        run: git diff --name-only -z HEAD^2 HEAD -- '*.ts' | xargs -0 pnpm exec oxfmt --check
-      - name: Check test budget
-        run: node --import ./scripts/tsx.mjs scripts/check-test-lines-ratchet.mts --base eb8c48f33712abcf52583c359750ab3294c4bb1d --no-merge-base
+        run: node --import ./scripts/tsx.mjs scripts/check-test-lines-ratchet.mts --base f7c6804343843245d8ab6f37a91675ecc257a7b9 --no-merge-base
+      - name: Type-aware lint and type check of resolved module
+        run: node scripts/run-oxlint.mjs --type-aware --type-check --tsconfig tsconfig.json src/agents/embedded-agent-runner/run/message-tool-terminal.ts
